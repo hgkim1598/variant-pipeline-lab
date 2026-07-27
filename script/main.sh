@@ -893,3 +893,350 @@ if [[ "$RUN_MULTIQC" == true ]]; then
 fi
 log "Pipeline log    : $PIPELINE_LOG"
 log "============================================================"
+
+
+###############################################################################
+# 7. Execute — no manual checkpoints
+###############################################################################
+
+log "PIPELINE START — no manual checkpoint will be requested."
+
+if (( DO_FASTQC == 1 )); then
+  mkdir -p "$QC_DIR/fastqc_raw"
+  run_cmd "00_fastqc_raw" fastqc --threads "$FASTQC_THREADS" --outdir "$QC_DIR/fastqc_raw" "$FQ1" "$FQ2"
+fi
+printf 'trim_mode\tnone\nreason\tNo automatic trimming; project policy requires an explicit QC-based decision.\n' > "$QC_DIR/${PREFIX}.trim_decision.tsv"
+
+CURRENT_STAGE="01_alignment"
+ALIGN_START="$(date +%s)"
+printf '%s\t%s\tSTARTED\t0\n' "$(date -Is)" "$CURRENT_STAGE" >> "$STATUS_TSV"
+log "START 01_alignment: BWA-MEM -> samtools coordinate sort"
+{
+  echo "# $(date -Is) — 01_alignment"
+  printf '%q ' bwa mem -K 100000000 -t "$THREADS" -Y -R "$RG_STRING" "$REF" "$FQ1" "$FQ2"
+  printf ' | '
+  printf '%q ' samtools sort -@ "$SORT_THREADS" -m "$SORT_MEM" -T "$TMP_DIR/sort_tmp" -O bam -o "$SORTED_PART" -
+  printf '\n\n'
+} >> "$COMMANDS_SH"
+set +e
+bwa mem -K 100000000 -t "$THREADS" -Y -R "$RG_STRING" "$REF" "$FQ1" "$FQ2" \
+  2> "$LOG_DIR/01_bwa_mem.stderr.log" \
+  | samtools sort -@ "$SORT_THREADS" -m "$SORT_MEM" -T "$TMP_DIR/sort_tmp" -O bam -o "$SORTED_PART" - \
+      2> "$LOG_DIR/01_samtools_sort.stderr.log"
+PIPE_RC=("${PIPESTATUS[@]}")
+set -e
+if (( PIPE_RC[0] != 0 || PIPE_RC[1] != 0 )); then
+  printf '%s\t%s\tFAILED\t%s\n' "$(date -Is)" "$CURRENT_STAGE" "${PIPE_RC[0]}|${PIPE_RC[1]}" >> "$STATUS_TSV"
+  printf 'FAILED\n' > "$LOG_DIR/RUN_FAILED"
+  echo "ERROR: alignment pipeline failed; bwa=${PIPE_RC[0]}, samtools_sort=${PIPE_RC[1]}" >&2
+  exit 1
+fi
+mv "$SORTED_PART" "$SORTED_BAM"
+samtools quickcheck -v "$SORTED_BAM"
+samtools view -H "$SORTED_BAM" | grep '^@HD.*SO:coordinate' >/dev/null
+ALIGN_END="$(date +%s)"
+printf '%s\t%s\tCOMPLETED\t0\n' "$(date -Is)" "$CURRENT_STAGE" >> "$STATUS_TSV"
+printf '%s\t%s\t%s\n' "$CURRENT_STAGE" "$((ALIGN_END-ALIGN_START))" "$(date -Is)" >> "$TRACE_TSV"
+log "DONE  01_alignment ($((ALIGN_END-ALIGN_START)) sec)"
+
+run_cmd "02_markduplicates" \
+  gatk --java-options "-Xmx${JAVA_MEM_GB}g -Djava.io.tmpdir=$TMP_DIR" MarkDuplicates \
+    -I "$SORTED_BAM" -O "$MARKDUP_PART" -M "$MARKDUP_METRICS" \
+    --REMOVE_DUPLICATES false --CREATE_INDEX false \
+    "${READ_NAME_REGEX_ARGS[@]}" --TMP_DIR "$TMP_DIR"
+mv "$MARKDUP_PART" "$MARKDUP_BAM"
+samtools quickcheck -v "$MARKDUP_BAM"
+
+# hs37d5 contains ambiguous reference symbols at some loci. In this dataset,
+# BWA and Picard can disagree on a small number of NM/MD tags even though the
+# alignments themselves are valid. Recalculate only NM/MD against the exact
+# reference before strict Picard validation; read sequence, CIGAR, coordinate
+# and duplicate flags are preserved.
+CURRENT_STAGE="02b_recalculate_nm_md"
+NM_START="$(date +%s)"
+printf '%s\t%s\tSTARTED\t0\n' "$(date -Is)" "$CURRENT_STAGE" >> "$STATUS_TSV"
+log "START 02b_recalculate_nm_md: samtools calmd"
+{
+  echo "# $(date -Is) — 02b_recalculate_nm_md"
+  printf '%q ' samtools calmd -@ "$THREADS" -b "$MARKDUP_BAM" "$REF"
+  printf ' > %q 2> %q\n\n' "$MARKDUP_NM_PART" "$LOG_DIR/02b_calmd.stderr.log"
+} >> "$COMMANDS_SH"
+
+if [[ -x /usr/bin/time ]]; then
+  if /usr/bin/time -v -o "$LOG_DIR/resource_02b_recalculate_nm_md.txt" \
+      samtools calmd -@ "$THREADS" -b "$MARKDUP_BAM" "$REF" \
+      > "$MARKDUP_NM_PART" 2> "$LOG_DIR/02b_calmd.stderr.log"; then NM_RC=0; else NM_RC=$?; fi
+else
+  if samtools calmd -@ "$THREADS" -b "$MARKDUP_BAM" "$REF" \
+      > "$MARKDUP_NM_PART" 2> "$LOG_DIR/02b_calmd.stderr.log"; then NM_RC=0; else NM_RC=$?; fi
+fi
+
+if (( NM_RC != 0 )); then
+  printf '%s\t%s\tFAILED\t%s\n' "$(date -Is)" "$CURRENT_STAGE" "$NM_RC" >> "$STATUS_TSV"
+  printf 'FAILED\n' > "$LOG_DIR/RUN_FAILED"
+  echo "ERROR: samtools calmd failed; see $LOG_DIR/02b_calmd.stderr.log" >&2
+  trap - ERR
+  exit "$NM_RC"
+fi
+samtools quickcheck -v "$MARKDUP_NM_PART"
+mv "$MARKDUP_NM_PART" "$MARKDUP_BAM"
+NM_END="$(date +%s)"
+printf '%s\t%s\tCOMPLETED\t0\n' "$(date -Is)" "$CURRENT_STAGE" >> "$STATUS_TSV"
+printf '%s\t%s\t%s\n' "$CURRENT_STAGE" "$((NM_END-NM_START))" "$(date -Is)" >> "$TRACE_TSV"
+log "DONE  02b_recalculate_nm_md ($((NM_END-NM_START)) sec)"
+
+run_cmd "02c_markdup_index" samtools index -@ "$THREADS" "$MARKDUP_BAM"
+samtools quickcheck -v "$MARKDUP_BAM"
+
+CURRENT_STAGE="03_markdup_qc"
+samtools flagstat -@ "$THREADS" "$MARKDUP_BAM" > "$QC_DIR/${PREFIX}.markdup.flagstat.txt"
+samtools stats -@ "$THREADS" "$MARKDUP_BAM" > "$QC_DIR/${PREFIX}.markdup.stats.txt"
+run_cmd "03_validate_markdup_bam" gatk --java-options "-Xmx4g" ValidateSamFile \
+  -I "$MARKDUP_BAM" -R "$REF" -MODE SUMMARY -O "$QC_DIR/${PREFIX}.markdup.validation.txt"
+
+BQSR_INTERVAL_ARGS=()
+if (( BQSR_TARGET_ONLY == 1 )); then BQSR_INTERVAL_ARGS=(-L "$TARGET_BED" -ip "$INTERVAL_PADDING"); fi
+run_cmd "04_base_recalibrator" \
+  gatk --java-options "-Xmx${JAVA_MEM_GB}g -Djava.io.tmpdir=$TMP_DIR" BaseRecalibrator \
+    -R "$REF" -I "$MARKDUP_BAM" \
+    --known-sites "$DBSNP" --known-sites "$MILLS" --known-sites "$KG_INDELS" \
+    "${BQSR_INTERVAL_ARGS[@]}" -O "$RECAL_PART" --tmp-dir "$TMP_DIR"
+mv "$RECAL_PART" "$RECAL_TABLE"
+grep -q 'RecalTable0' "$RECAL_TABLE"
+
+# No -L here: ApplyBQSR must preserve the complete BAM rather than emit only
+# interval-overlapping reads.
+run_cmd "05_apply_bqsr" \
+  gatk --java-options "-Xmx${JAVA_MEM_GB}g -Djava.io.tmpdir=$TMP_DIR" ApplyBQSR \
+    -R "$REF" -I "$MARKDUP_BAM" --bqsr-recal-file "$RECAL_TABLE" \
+    -O "$FINAL_PART" --create-output-bam-index false --tmp-dir "$TMP_DIR"
+mv "$FINAL_PART" "$FINAL_BAM"
+run_cmd "05b_analysis_bam_index" samtools index -@ "$THREADS" "$FINAL_BAM"
+samtools quickcheck -v "$FINAL_BAM"
+
+CURRENT_STAGE="06_analysis_bam_qc"
+samtools flagstat -@ "$THREADS" "$FINAL_BAM" > "$QC_DIR/${PREFIX}.analysis_ready.flagstat.txt"
+samtools stats -@ "$THREADS" "$FINAL_BAM" > "$QC_DIR/${PREFIX}.analysis_ready.stats.txt"
+run_cmd "06_validate_analysis_bam" gatk --java-options "-Xmx4g" ValidateSamFile \
+  -I "$FINAL_BAM" -R "$REF" -MODE SUMMARY -O "$QC_DIR/${PREFIX}.analysis_ready.validation.txt"
+
+if (( DO_BQSR_DIAGNOSTICS == 1 )); then
+  run_optional_cmd "06b_recal_after" \
+    gatk --java-options "-Xmx${JAVA_MEM_GB}g -Djava.io.tmpdir=$TMP_DIR" BaseRecalibrator \
+      -R "$REF" -I "$FINAL_BAM" \
+      --known-sites "$DBSNP" --known-sites "$MILLS" --known-sites "$KG_INDELS" \
+      "${BQSR_INTERVAL_ARGS[@]}" -O "$RECAL_AFTER" --tmp-dir "$TMP_DIR"
+  if [[ -s "$RECAL_AFTER" ]]; then
+    run_optional_cmd "06c_analyze_covariates" gatk --java-options "-Xmx${JAVA_MEM_GB}g" AnalyzeCovariates \
+      -before "$RECAL_TABLE" -after "$RECAL_AFTER" \
+      -csv "$QC_DIR/${PREFIX}.bqsr_covariates.csv" -plots "$QC_DIR/${PREFIX}.bqsr_covariates.pdf"
+  fi
+fi
+
+run_cmd "07_target_coverage" mosdepth --threads "$THREADS" --no-per-base --mapq "$MOSDEPTH_MAPQ" \
+  --by "$MERGED_BED" --thresholds 1,10,20,30,50,100 \
+  "$QC_DIR/${PREFIX}.mosdepth" "$FINAL_BAM"
+
+run_cmd "08_haplotypecaller_gvcf" \
+  gatk --java-options "-Xmx${JAVA_MEM_GB}g -Djava.io.tmpdir=$TMP_DIR" HaplotypeCaller \
+    -R "$REF" -I "$FINAL_BAM" -ERC GVCF \
+    -L "$TARGET_BED" -ip "$INTERVAL_PADDING" \
+    --native-pair-hmm-threads "$PAIRHMM_THREADS" \
+    -O "$GVCF_PART" --tmp-dir "$TMP_DIR"
+mv "$GVCF_PART" "$GVCF"
+if [[ -s "${GVCF_PART}.tbi" ]]; then mv "${GVCF_PART}.tbi" "${GVCF}.tbi"; fi
+[[ -s "${GVCF}.tbi" ]] || run_cmd "08b_gvcf_index" tabix -p vcf "$GVCF"
+
+run_cmd "09_genotype_gvcfs" \
+  gatk --java-options "-Xmx${JAVA_MEM_GB}g -Djava.io.tmpdir=$TMP_DIR" GenotypeGVCFs \
+    -R "$REF" -V "$GVCF" --dbsnp "$DBSNP" \
+    -L "$TARGET_BED" -ip "$INTERVAL_PADDING" \
+    -O "$RAW_PART" --tmp-dir "$TMP_DIR"
+mv "$RAW_PART" "$RAW_VCF"
+if [[ -s "${RAW_PART}.tbi" ]]; then mv "${RAW_PART}.tbi" "${RAW_VCF}.tbi"; fi
+[[ -s "${RAW_VCF}.tbi" ]] || run_cmd "09b_raw_vcf_index" tabix -p vcf "$RAW_VCF"
+
+###############################################################################
+# 8. Final consolidated validation and web-facing outputs
+###############################################################################
+
+set +e
+CURRENT_STAGE="10_final_validation"
+log "START 10_final_validation — all outputs will be checked together."
+printf 'check\tstatus\tdetail\n' > "$FINAL_VALIDATION"
+V_PASS=(); V_WARN=(); V_FAIL=()
+vpass() { V_PASS+=("$1: $2"); printf '%s\tPASS\t%s\n' "$1" "$2" >> "$FINAL_VALIDATION"; }
+vwarn() { V_WARN+=("$1: $2"); printf '%s\tWARN\t%s\n' "$1" "$2" >> "$FINAL_VALIDATION"; }
+vfail() { V_FAIL+=("$1: $2"); printf '%s\tFAIL\t%s\n' "$1" "$2" >> "$FINAL_VALIDATION"; }
+
+for f in "$SORTED_BAM" "$MARKDUP_BAM" "$MARKDUP_METRICS" "$RECAL_TABLE" "$FINAL_BAM" "$GVCF" "$RAW_VCF"; do
+  [[ -s "$f" ]] || vfail "required_artifact" "missing/empty: $f"
+done
+(( ${#V_FAIL[@]} == 0 )) && vpass "required_artifacts" "all core artifacts exist and are non-empty"
+
+samtools quickcheck -v "$SORTED_BAM" "$MARKDUP_BAM" "$FINAL_BAM" >/dev/null 2>&1 \
+  && vpass "bam_quickcheck" "sorted, markdup and analysis-ready BAM passed" \
+  || vfail "bam_quickcheck" "one or more BAM files failed"
+
+BAM_SORT_FAIL=0
+for bam in "$SORTED_BAM" "$MARKDUP_BAM" "$FINAL_BAM"; do
+  samtools view -H "$bam" 2>/dev/null | grep '^@HD.*SO:coordinate' >/dev/null \
+    || { vfail "bam_sort_order" "SO:coordinate missing: $bam"; BAM_SORT_FAIL=1; }
+done
+(( BAM_SORT_FAIL == 0 )) && vpass "bam_sort_order" "all BAM headers report coordinate sort"
+
+BAM_INDEX_FAIL=0
+for bam in "$MARKDUP_BAM" "$FINAL_BAM"; do
+  samtools idxstats "$bam" >/dev/null 2>&1 \
+    || { vfail "bam_index" "index missing/unreadable: $bam"; BAM_INDEX_FAIL=1; }
+done
+(( BAM_INDEX_FAIL == 0 )) && vpass "bam_indexes" "markdup and analysis-ready indexes are readable"
+
+samtools view -H "$FINAL_BAM" 2>/dev/null | grep "SM:${RG_SM}" >/dev/null \
+  && vpass "read_group_sample" "SM:${RG_SM} present" \
+  || vfail "read_group_sample" "SM:${RG_SM} missing"
+
+MARKDUP_TOTAL="$(awk 'NR==1 {print $1}' "$QC_DIR/${PREFIX}.markdup.flagstat.txt" 2>/dev/null)"
+FINAL_TOTAL="$(awk 'NR==1 {print $1}' "$QC_DIR/${PREFIX}.analysis_ready.flagstat.txt" 2>/dev/null)"
+if [[ -n "$MARKDUP_TOTAL" && "$MARKDUP_TOTAL" == "$FINAL_TOTAL" ]]; then
+  vpass "applybqsr_record_preservation" "before=$MARKDUP_TOTAL after=$FINAL_TOTAL"
+else
+  vfail "applybqsr_record_preservation" "before=${MARKDUP_TOTAL:-NA} after=${FINAL_TOTAL:-NA}"
+fi
+
+VCF_PARSE_FAIL=0
+VCF_INDEX_FAIL=0
+for vcf in "$GVCF" "$RAW_VCF"; do
+  bcftools view -h "$vcf" >/dev/null 2>&1 \
+    || { vfail "vcf_parse" "cannot parse $vcf"; VCF_PARSE_FAIL=1; }
+  tabix -l "$vcf" >/dev/null 2>&1 \
+    || { vfail "vcf_index" "index missing/unreadable: $vcf"; VCF_INDEX_FAIL=1; }
+done
+(( VCF_PARSE_FAIL == 0 )) && vpass "vcf_parse" "gVCF and raw VCF parse"
+(( VCF_INDEX_FAIL == 0 )) && vpass "vcf_indexes" "gVCF and raw VCF indexes are readable"
+
+VCF_SAMPLE="$(bcftools query -l "$RAW_VCF" 2>/dev/null)"
+[[ "$VCF_SAMPLE" == "$RG_SM" ]] && vpass "vcf_sample" "$VCF_SAMPLE" || vfail "vcf_sample" "expected=$RG_SM observed=${VCF_SAMPLE:-NA}"
+
+RAW_RECORDS="$(bcftools view -H "$RAW_VCF" 2>/dev/null | wc -l)"
+if is_uint "$RAW_RECORDS" && (( RAW_RECORDS > 0 )); then vpass "raw_vcf_records" "$RAW_RECORDS"; else vfail "raw_vcf_records" "record count is ${RAW_RECORDS:-NA}"; fi
+
+bcftools norm -f "$REF" -c e -Ou -o /dev/null "$RAW_VCF" 2> "$LOG_DIR/10_raw_vcf_ref_check.log" \
+  && vpass "raw_vcf_ref_match" "all REF alleles match hs37d5" \
+  || vfail "raw_vcf_ref_match" "REF allele mismatch; see 10_raw_vcf_ref_check.log"
+
+bcftools stats "$RAW_VCF" > "$QC_DIR/${PREFIX}.raw.bcftools.stats.txt" 2>/dev/null \
+  || vfail "bcftools_stats" "could not create VCF statistics"
+[[ -s "$QC_DIR/${PREFIX}.raw.bcftools.stats.txt" ]] && vpass "bcftools_stats" "raw VCF statistics created"
+
+python3 - "$SAMPLE" "$RUN_ID" "$READ_PAIRS" \
+  "$QC_DIR/${PREFIX}.analysis_ready.flagstat.txt" "$MARKDUP_METRICS" \
+  "$QC_DIR/${PREFIX}.mosdepth.regions.bed.gz" "$QC_DIR/${PREFIX}.mosdepth.thresholds.bed.gz" \
+  "$QC_DIR/${PREFIX}.raw.bcftools.stats.txt" "$METRICS_JSON" <<'PYMETRICS'
+import gzip,json,re,sys
+from pathlib import Path
+sample,run_id,read_pairs,flagstat,mdmetrics,regions,thresholds,stats,out=sys.argv[1:]
+m={"sample":sample,"run_id":run_id,"input_read_pairs":int(read_pairs)}
+txt=Path(flagstat).read_text()
+for k,p in {"total_alignment_records":r'^(\d+) \+ \d+ in total',"mapped_records":r'^(\d+) \+ \d+ mapped',"properly_paired_records":r'^(\d+) \+ \d+ properly paired',"duplicate_records":r'^(\d+) \+ \d+ duplicates'}.items():
+    x=re.search(p,txt,re.M)
+    if x: m[k]=int(x.group(1))
+for k,p in {"mapped_pct":r'mapped \(([-0-9.]+)%',"properly_paired_pct":r'properly paired \(([-0-9.]+)%'}.items():
+    x=re.search(p,txt)
+    if x: m[k]=float(x.group(1))
+lines=[x for x in Path(mdmetrics).read_text().splitlines() if x and not x.startswith('#')]
+for i,line in enumerate(lines):
+    if line.startswith('LIBRARY') and i+1<len(lines):
+        row=dict(zip(line.split('\t'),lines[i+1].split('\t')))
+        if row.get('PERCENT_DUPLICATION'): m['picard_percent_duplication']=float(row['PERCENT_DUPLICATION'])
+        if row.get('ESTIMATED_LIBRARY_SIZE'):
+            try:m['estimated_library_size']=int(row['ESTIMATED_LIBRARY_SIZE'])
+            except ValueError:m['estimated_library_size']=row['ESTIMATED_LIBRARY_SIZE']
+        break
+rp=Path(regions)
+if rp.exists():
+    bases=0; depth_bases=0.0
+    with gzip.open(rp,'rt') as fh:
+        for line in fh:
+            if not line.strip() or line.startswith('#'):continue
+            f=line.rstrip().split('\t'); length=int(f[2])-int(f[1]); depth=float(f[-1]); bases+=length; depth_bases+=length*depth
+    if bases:m['target_nonoverlap_bases']=bases;m['mean_target_depth']=round(depth_bases/bases,4)
+tp=Path(thresholds)
+if tp.exists():
+    names=[];idx=[];sums=[];total=0
+    with gzip.open(tp,'rt') as fh:
+        for line in fh:
+            f=line.rstrip().split('\t')
+            if line.startswith('#'):
+                for i,c in enumerate(f):
+                    if re.fullmatch(r'\d+X',c.strip()):idx.append(i);names.append(c.strip())
+                sums=[0]*len(idx);continue
+            if not idx:continue
+            total+=int(f[2])-int(f[1])
+            for j,i in enumerate(idx):sums[j]+=int(f[i])
+    if total:
+        for name,n in zip(names,sums):m[f'target_bases_ge_{name}_pct']=round(100*n/total,4)
+for line in Path(stats).read_text().splitlines():
+    f=line.split('\t')
+    if f[0]=='SN' and len(f)>=4:
+        key={'number of records':'raw_variant_records','number of SNPs':'raw_snps','number of indels':'raw_indels','number of multiallelic sites':'raw_multiallelic_sites'}.get(f[2].rstrip(':'))
+        if key:
+            try:m[key]=int(f[3])
+            except ValueError:m[key]=f[3]
+    elif f[0]=='TSTV' and len(f)>=5:
+        try:m['raw_ts_tv']=float(f[4])
+        except ValueError:pass
+with open(out,'w') as fh:json.dump(m,fh,ensure_ascii=False,indent=2);fh.write('\n')
+PYMETRICS
+if [[ -s "$METRICS_JSON" ]]; then vpass "metrics_json" "$METRICS_JSON"; else vfail "metrics_json" "not created"; fi
+
+printf 'artifact_type\tpath\tbytes\tsha256\n' > "$ARTIFACT_TSV"
+add_artifact() {
+  local type="$1" file="$2" checksum="${3:-0}" sum=""
+  [[ -s "$file" ]] || return 0
+  if [[ "$checksum" -eq 1 ]]; then sum="$(sha256sum "$file" | awk '{print $1}')"; fi
+  printf '%s\t%s\t%s\t%s\n' "$type" "$file" "$(stat -c %s "$file")" "$sum" >> "$ARTIFACT_TSV"
+}
+add_artifact sorted_bam "$SORTED_BAM" 0
+add_artifact markdup_bam "$MARKDUP_BAM" 0
+add_artifact analysis_ready_bam "$FINAL_BAM" 1
+add_artifact analysis_ready_bai "${FINAL_BAM}.bai" 1
+add_artifact gvcf "$GVCF" 1
+add_artifact gvcf_tbi "${GVCF}.tbi" 1
+add_artifact raw_vcf "$RAW_VCF" 1
+add_artifact raw_vcf_tbi "${RAW_VCF}.tbi" 1
+add_artifact metrics_json "$METRICS_JSON" 1
+add_artifact final_validation "$FINAL_VALIDATION" 0
+vpass "artifact_manifest" "$ARTIFACT_TSV"
+
+RUN_END_EPOCH="$(date +%s)"
+python3 - "$PROVENANCE_JSON" <<PYPROV
+import json
+obj={"pipeline_name":"$PIPELINE_NAME","pipeline_version":"$PIPELINE_VERSION","run_id":"$RUN_ID","status":"COMPLETED" if int("${#V_FAIL[@]}")==0 else "FAILED_VALIDATION","started_epoch":int("$RUN_START_EPOCH"),"finished_epoch":int("$RUN_END_EPOCH"),"elapsed_seconds":int("$RUN_END_EPOCH")-int("$RUN_START_EPOCH"),"run_config":"$RUN_CONFIG_JSON","software_versions":"$VERSIONS_TXT","resource_checksums":"$RESOURCE_SHA256","commands":"$COMMANDS_SH","stage_status":"$STATUS_TSV","execution_trace":"$TRACE_TSV","metrics":"$METRICS_JSON","artifacts":"$ARTIFACT_TSV","final_validation":"$FINAL_VALIDATION"}
+with open("$PROVENANCE_JSON","w") as f:json.dump(obj,f,ensure_ascii=False,indent=2);f.write("\n")
+PYPROV
+
+printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$CURRENT_STAGE" "$([[ ${#V_FAIL[@]} -eq 0 ]] && echo COMPLETED || echo FAILED)" "$([[ ${#V_FAIL[@]} -eq 0 ]] && echo 0 || echo 1)" >> "$STATUS_TSV"
+
+log "FINAL VALIDATION: PASS=${#V_PASS[@]} WARN=${#V_WARN[@]} FAIL=${#V_FAIL[@]}"
+if (( ${#V_WARN[@]} > 0 )); then printf 'WARN: %s\n' "${V_WARN[@]}"; fi
+if (( ${#V_FAIL[@]} > 0 )); then
+  printf 'FAIL: %s\n' "${V_FAIL[@]}"
+  printf 'FAILED\n' > "$LOG_DIR/RUN_FAILED"
+  log "Validation failed. Do not use the result until all FAIL items are resolved: $FINAL_VALIDATION"
+  exit 1
+fi
+
+printf 'COMPLETED\n' > "$LOG_DIR/RUN_COMPLETED"
+ln -sfn "$LOG_DIR" "$PROJECT/logs/full/latest_v5"
+log "PIPELINE COMPLETED"
+log "Run ID             : $RUN_ID"
+log "Analysis-ready BAM : $FINAL_BAM"
+log "gVCF               : $GVCF"
+log "Raw VCF            : $RAW_VCF ($RAW_RECORDS records)"
+log "Metrics JSON       : $METRICS_JSON"
+log "Validation report  : $FINAL_VALIDATION"
+log "Artifact manifest  : $ARTIFACT_TSV"
+log "Provenance         : $PROVENANCE_JSON"
+log "Pipeline log       : $PIPELINE_LOG"
+exit 0
