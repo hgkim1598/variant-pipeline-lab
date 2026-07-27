@@ -247,6 +247,161 @@ if [[ "$RUN_MULTIQC" == true ]] && ! command -v multiqc >/dev/null 2>&1; then
     RUN_MULTIQC=false
 fi
 
+# ==============================================================================
+# KMG - Trimming
+# ==============================================================================
+#!/usr/bin/env bash
+# =============================================================================
+#  02_trimming.sh — fastp Adapter Trimming [추가 단계]
+#
+#  [웹 연동 호출 방식]
+#  환경변수로 입력 파일을 받거나, 인수로 직접 지정:
+#    # 방식 1: 환경변수
+#    export INPUT_R1="/path/to/sample_R1.fastq.gz"
+#    export INPUT_R2="/path/to/sample_R2.fastq.gz"
+#    bash 02_trimming.sh
+#
+#    # 방식 2: 인수 직접 지정
+#    bash 02_trimming.sh /path/to/sample_R1.fastq.gz /path/to/sample_R2.fastq.gz
+#
+#    # 방식 3: 업로드 디렉토리 자동 감지 (파일 1개만 있을 때)
+#    export UPLOAD_DIR="/upload/sessionXXX"
+#    bash 02_trimming.sh
+#
+#  [지원 파일명 패턴]
+#    sample_R1.fastq.gz / sample_R2.fastq.gz
+#    sample_R1_001.fastq.gz / sample_R2_001.fastq.gz
+#    sample_1.fastq.gz / sample_2.fastq.gz
+#    sample_1.fq.gz / sample_2.fq.gz
+# =============================================================================
+set -euo pipefail
+
+THREADS="${THREADS:-8}"
+BASE_DIR="${BASE_DIR:-$HOME/giab_wes}"
+
+# ── 입력 파일 결정 함수 ───────────────────────────────────────────────────────
+detect_inputs() {
+    # 우선순위 1: 인수로 직접 전달
+    if [[ $# -ge 2 ]]; then
+        echo "$1 $2"
+        return
+    fi
+
+    # 우선순위 2: 환경변수 INPUT_R1 / INPUT_R2
+    if [[ -n "${INPUT_R1:-}" && -n "${INPUT_R2:-}" ]]; then
+        echo "${INPUT_R1} ${INPUT_R2}"
+        return
+    fi
+
+    # 우선순위 3: UPLOAD_DIR 에서 자동 감지
+    local SEARCH_DIR="${UPLOAD_DIR:-${BASE_DIR}/fastq}"
+    local R1="" R2=""
+
+    # _R1_ 또는 _1. 패턴의 FASTQ 파일 검색
+    while IFS= read -r f; do
+        if [[ -z "${R1}" ]]; then
+            R1="$f"
+            # R2 자동 매칭
+            R2="${f/_R1_/_R2_}"
+            R2="${R2/_R1./_R2.}"
+            R2="${R2/_1.fastq/_2.fastq}"
+            R2="${R2/_1.fq/_2.fq}"
+        fi
+    done < <(find "${SEARCH_DIR}" -maxdepth 2 \
+        \( -name "*_R1_*.fastq.gz" -o -name "*_R1_*.fq.gz" \
+           -o -name "*_R1.fastq.gz"  -o -name "*_R1.fq.gz" \
+           -o -name "*_1.fastq.gz"   -o -name "*_1.fq.gz" \) \
+        2>/dev/null | sort)
+
+    if [[ -z "${R1}" || ! -f "${R2}" ]]; then
+        echo "ERROR: R1/R2 FASTQ 파일을 찾을 수 없습니다." >&2
+        echo "  검색 경로: ${SEARCH_DIR}" >&2
+        echo "  INPUT_R1, INPUT_R2 환경변수를 직접 지정하거나 인수로 파일 경로를 전달하세요." >&2
+        exit 1
+    fi
+    echo "${R1} ${R2}"
+}
+
+# ── Sample ID 추출 함수 ───────────────────────────────────────────────────────
+extract_sample_id() {
+    local R1_PATH="$1"
+    local FNAME
+    FNAME=$(basename "${R1_PATH}")
+
+    # 패턴 제거: _R1_001, _R1, _1 + 확장자
+    local SAMPLE_ID
+    SAMPLE_ID="${FNAME}"
+    SAMPLE_ID="${SAMPLE_ID/_R1_001.fastq.gz/}"
+    SAMPLE_ID="${SAMPLE_ID/_R1_001.fq.gz/}"
+    SAMPLE_ID="${SAMPLE_ID/_R1.fastq.gz/}"
+    SAMPLE_ID="${SAMPLE_ID/_R1.fq.gz/}"
+    SAMPLE_ID="${SAMPLE_ID/_1.fastq.gz/}"
+    SAMPLE_ID="${SAMPLE_ID/_1.fq.gz/}"
+
+    # 공백·특수문자 제거
+    SAMPLE_ID="${SAMPLE_ID//[^a-zA-Z0-9_\-]/}"
+    echo "${SAMPLE_ID}"
+}
+
+# ── 메인 ──────────────────────────────────────────────────────────────────────
+main() {
+    # 입력 파일 결정
+    local INPUTS
+    INPUTS=$(detect_inputs "$@")
+    read -r INPUT_R1_FINAL INPUT_R2_FINAL <<< "${INPUTS}"
+
+    # Sample ID 추출
+    SAMPLE_ID=$(extract_sample_id "${INPUT_R1_FINAL}")
+    echo "=== [02] fastp Trimming ==="
+    echo "  Sample ID : ${SAMPLE_ID}"
+    echo "  R1 입력   : ${INPUT_R1_FINAL}"
+    echo "  R2 입력   : ${INPUT_R2_FINAL}"
+
+    # 출력 경로 설정 (Sample ID 기반)
+    CLEAN_DIR="${BASE_DIR}/samples/${SAMPLE_ID}/fastq_clean"
+    QC_DIR="${BASE_DIR}/samples/${SAMPLE_ID}/qc/fastp"
+    mkdir -p "${CLEAN_DIR}" "${QC_DIR}"
+
+    local R1_CLEAN="${CLEAN_DIR}/${SAMPLE_ID}_R1.clean.fastq.gz"
+    local R2_CLEAN="${CLEAN_DIR}/${SAMPLE_ID}_R2.clean.fastq.gz"
+
+    # fastp 설치 확인
+    if ! command -v fastp &>/dev/null; then
+        echo "  fastp 미설치 → conda install 실행..."
+        conda install -c bioconda fastp -y
+    fi
+
+    # fastp 실행
+    fastp \
+        -i  "${INPUT_R1_FINAL}" \
+        -I  "${INPUT_R2_FINAL}" \
+        -o  "${R1_CLEAN}" \
+        -O  "${R2_CLEAN}" \
+        --detect_adapter_for_pe \
+        --qualified_quality_phred 20 \
+        --unqualified_percent_limit 40 \
+        --length_required 50 \
+        --thread "${THREADS}" \
+        --json "${QC_DIR}/fastp.json" \
+        --html "${QC_DIR}/fastp.html"
+
+    # 결과 요약 출력 (웹 백엔드가 파싱할 수 있도록 JSON 경로 명시)
+    echo ""
+    echo "=== [02] 완료 ==="
+    echo "  SAMPLE_ID=${SAMPLE_ID}"
+    echo "  R1_CLEAN=${R1_CLEAN}"
+    echo "  R2_CLEAN=${R2_CLEAN}"
+    echo "  QC_REPORT=${QC_DIR}/fastp.html"
+    echo "  QC_JSON=${QC_DIR}/fastp.json"
+    echo "  NEXT_STEP=03_alignment.sh"
+}
+
+main "$@"
+
+# ==============================================================================
+# KMG - Trimming
+# ==============================================================================
+
 {
     echo "pipeline_version=$SCRIPT_VERSION"
     echo "run_started=$(date --iso-8601=seconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
@@ -266,7 +421,7 @@ fi
 } > "$RUN_INFO_DIR/software_versions.txt"
 
 # ------------------------------------------------------------
-# Validate and normalize Sarek-style CSV with Python's csv module.
+# Validate and normalize CSV with Python's csv module.
 # Relative FASTQ paths are resolved relative to the CSV directory.
 # ------------------------------------------------------------
 CURRENT_STEP="validating input samplesheet"
@@ -1240,3 +1395,349 @@ log "Artifact manifest  : $ARTIFACT_TSV"
 log "Provenance         : $PROVENANCE_JSON"
 log "Pipeline log       : $PIPELINE_LOG"
 exit 0
+
+# ==================================================================
+# KMG - Coverage QC
+# ==================================================================
+
+#!/usr/bin/env bash
+# =============================================================================
+#  05_coverage_qc.sh — Coverage QC (mosdepth + samtools flagstat) [추가 단계]
+#
+#  [웹 연동 호출 방식]
+#    # 방식 1: 환경변수
+#    export SAMPLE_ID="HG002"
+#    export INPUT_BAM="/path/to/HG002.recal.bam"
+#    bash 05_coverage_qc.sh
+#
+#    # 방식 2: 인수
+#    bash 05_coverage_qc.sh HG002 /path/to/HG002.recal.bam
+#
+#  [통과 기준]
+#    평균 depth >= 80x  /  20x 이상 커버 >= 90%
+#    기준 미달 시 exit code 2 반환 (웹 백엔드에서 경고 처리)
+# =============================================================================
+set -euo pipefail
+
+THREADS="${THREADS:-8}"
+BASE_DIR="${BASE_DIR:-$HOME/giab_wes}"
+REF_DIR="${BASE_DIR}/ref"
+
+# 유방암 유전자 기본 BED (전용 BED 없을 때 사용)
+BREAST_CANCER_BED_CONTENT="chr17\t43044295\t43125483\tBRCA1
+chr13\t32315474\t32400266\tBRCA2
+chr16\t23603160\t23641310\tPALB2
+chr11\t108222484\t108369102\tATM
+chr22\t28687743\t28742422\tCHEK2
+chr17\t7668402\t7687550\tTP53
+chr10\t87863113\t87971930\tPTEN
+chr16\t68737292\t68835541\tCDH1"
+
+# ── 입력 결정 ─────────────────────────────────────────────────────────────────
+resolve_inputs() {
+    if [[ $# -ge 2 ]]; then
+        SAMPLE_ID="$1"
+        INPUT_BAM="$2"
+        return
+    fi
+    if [[ -n "${SAMPLE_ID:-}" && -n "${INPUT_BAM:-}" ]]; then
+        return
+    fi
+    # 자동 감지: recal.bam
+    local FOUND_BAM
+    FOUND_BAM=$(find "${BASE_DIR}/samples" -maxdepth 3 \
+        -name "*.recal.bam" 2>/dev/null | head -1)
+    if [[ -z "${FOUND_BAM}" ]]; then
+        echo "ERROR: recal BAM 파일을 찾을 수 없습니다." >&2
+        exit 1
+    fi
+    INPUT_BAM="${FOUND_BAM}"
+    local BNAME
+    BNAME=$(basename "${FOUND_BAM}")
+    SAMPLE_ID="${BNAME%.recal.bam}"
+}
+
+# ── Target BED 결정 ───────────────────────────────────────────────────────────
+resolve_target_bed() {
+    # 우선순위 1: 환경변수로 지정된 캡처 kit BED
+    if [[ -n "${TARGET_BED:-}" && -f "${TARGET_BED}" ]]; then
+        echo "${TARGET_BED}"
+        return
+    fi
+    # 우선순위 2: ref 디렉토리의 표준 BED
+    local STANDARD="${REF_DIR}/exome_targets.bed"
+    if [[ -f "${STANDARD}" ]]; then
+        echo "${STANDARD}"
+        return
+    fi
+    # 우선순위 3: 기본 유방암 유전자 BED 생성
+    local FALLBACK="${BASE_DIR}/ref/breast_cancer_genes.bed"
+    mkdir -p "${REF_DIR}"
+    printf "${BREAST_CANCER_BED_CONTENT}\n" > "${FALLBACK}"
+    echo "  WES 타겟 BED 없음 → 유방암 유전자 BED 사용" >&2
+    echo "${FALLBACK}"
+}
+
+# ── 커버리지 기준 체크 ────────────────────────────────────────────────────────
+check_coverage() {
+    local SUMMARY="$1"
+    local PASS=true
+
+    while IFS=$'\t' read -r chrom length bases mean min max; do
+        if [[ "${chrom}" == "total_region" || "${chrom}" == "total" ]]; then
+            local MEAN_INT="${mean%.*}"
+            if (( MEAN_INT < 80 )); then
+                echo "  WARN: 평균 depth ${mean}x — 80x 미만 (기준 미달)"
+                PASS=false
+            else
+                echo "  PASS: 평균 depth ${mean}x (>= 80x)"
+            fi
+        fi
+    done < "${SUMMARY}"
+
+    if [[ "${PASS}" == "false" ]]; then
+        return 2
+    fi
+    return 0
+}
+
+# ── 메인 ──────────────────────────────────────────────────────────────────────
+main() {
+    resolve_inputs "$@"
+
+    local SAMPLE_DIR="${BASE_DIR}/samples/${SAMPLE_ID}"
+    local QC_DIR="${SAMPLE_DIR}/qc/coverage"
+    mkdir -p "${QC_DIR}"
+
+    echo "=== [05] Coverage QC ==="
+    echo "  Sample ID : ${SAMPLE_ID}"
+    echo "  입력 BAM  : ${INPUT_BAM}"
+
+    # 도구 확인
+    if ! command -v mosdepth &>/dev/null; then
+        echo "  mosdepth 미설치 → conda install 실행..."
+        conda install -c bioconda mosdepth -y
+    fi
+
+    local TARGET_BED_PATH
+    TARGET_BED_PATH=$(resolve_target_bed)
+    echo "  타겟 BED  : ${TARGET_BED_PATH}"
+
+    # ── flagstat ──────────────────────────────────────────────────────────────
+    echo ""
+    echo "=== [05-1] samtools flagstat ==="
+    local FLAGSTAT_OUT="${QC_DIR}/${SAMPLE_ID}.flagstat.txt"
+    samtools flagstat -@ "${THREADS}" "${INPUT_BAM}" | tee "${FLAGSTAT_OUT}"
+
+    # ── mosdepth ──────────────────────────────────────────────────────────────
+    echo ""
+    echo "=== [05-2] mosdepth ==="
+    local PREFIX="${QC_DIR}/${SAMPLE_ID}"
+    mosdepth \
+        --by     "${TARGET_BED_PATH}" \
+        --threads "${THREADS}" \
+        --quantize 0:1:10:20:50:100: \
+        "${PREFIX}" \
+        "${INPUT_BAM}"
+
+    echo ""
+    echo "=== Coverage 요약 ==="
+    cat "${PREFIX}.mosdepth.summary.txt"
+
+    echo ""
+    echo "기준: 평균 depth >= 80x, 20x 이상 커버 >= 90%"
+
+    # 기준 체크
+    local EXIT_CODE=0
+    check_coverage "${PREFIX}.mosdepth.summary.txt" || EXIT_CODE=$?
+
+    echo ""
+    echo "=== [05] 완료 ==="
+    echo "  SAMPLE_ID=${SAMPLE_ID}"
+    echo "  FLAGSTAT=${FLAGSTAT_OUT}"
+    echo "  MOSDEPTH_SUMMARY=${PREFIX}.mosdepth.summary.txt"
+    echo "  COVERAGE_PASS=$([ ${EXIT_CODE} -eq 0 ] && echo true || echo false)"
+    echo "  NEXT_STEP=06_variant_calling.sh"
+
+    exit ${EXIT_CODE}
+}
+
+main "$@"
+
+# ==================================================================
+# KMG - Coverage QC
+# ==================================================================
+
+
+
+
+
+
+
+# ==================================================================
+# KMG - 9. Intervar
+# ==================================================================
+
+#!/usr/bin/env bash
+# =============================================================================
+#  09_intervar.sh — InterVar ACMG 18기준 자동 분류 [추가 단계]
+#
+#  [웹 연동 호출 방식]
+#    # 방식 1: 환경변수
+#    export SAMPLE_ID="HG002"
+#    export INPUT_VCF="/path/to/HG002.annotated.vcf"
+#    bash 09_intervar.sh
+#
+#    # 방식 2: 인수
+#    bash 09_intervar.sh HG002 /path/to/HG002.annotated.vcf
+# =============================================================================
+set -euo pipefail
+
+BASE_DIR="${BASE_DIR:-$HOME/giab_wes}"
+TOOLS_DIR="${BASE_DIR}/tools"
+INTERVAR_DIR="${TOOLS_DIR}/InterVar"
+
+# ── 입력 결정 ─────────────────────────────────────────────────────────────────
+resolve_inputs() {
+    if [[ $# -ge 2 ]]; then
+        SAMPLE_ID="$1"
+        INPUT_VCF="$2"
+        return
+    fi
+    if [[ -n "${SAMPLE_ID:-}" && -n "${INPUT_VCF:-}" ]]; then
+        return
+    fi
+    # 자동 감지
+    local FOUND_VCF
+    FOUND_VCF=$(find "${BASE_DIR}/samples" -maxdepth 4 \
+        -name "*.annotated.vcf" 2>/dev/null | head -1)
+    if [[ -z "${FOUND_VCF}" ]]; then
+        echo "ERROR: annotated VCF 파일을 찾을 수 없습니다." >&2
+        exit 1
+    fi
+    INPUT_VCF="${FOUND_VCF}"
+    # 경로에서 Sample ID 추출
+    local DIR_NAME
+    DIR_NAME=$(dirname "${FOUND_VCF}")
+    SAMPLE_ID=$(basename "$(dirname "${DIR_NAME}")")
+}
+
+# ── InterVar 설치 ─────────────────────────────────────────────────────────────
+install_intervar() {
+    if [[ -d "${INTERVAR_DIR}" ]]; then
+        echo "  InterVar 이미 설치됨: ${INTERVAR_DIR}"
+        return
+    fi
+    echo "  InterVar 설치 중..."
+    mkdir -p "${TOOLS_DIR}"
+    git clone https://github.com/WGLab/InterVar.git "${INTERVAR_DIR}"
+    cd "${INTERVAR_DIR}"
+    pip install -r requirements.txt --break-system-packages 2>/dev/null || true
+    echo "  InterVar DB 다운로드 중 (humandb)..."
+    python InterVar.py --download_db -d humandb/ -b hg38
+    cd - > /dev/null
+}
+
+# ── 결과 집계 ────────────────────────────────────────────────────────────────
+summarize_results() {
+    local RESULT_FILE="$1"
+    local OUT_CSV="$2"
+
+    python3 - << PYEOF
+import pandas as pd, sys, json
+
+try:
+    df = pd.read_csv("${RESULT_FILE}", sep="\t", low_memory=False)
+
+    # ACMG 분류별 집계
+    print("\n[ACMG 분류별 변이 수]")
+    intervar_col = df["InterVar"] if "InterVar" in df.columns else df.iloc[:, -1]
+    counts = intervar_col.value_counts()
+    print(counts.to_string())
+
+    # Pathogenic / LP 추출
+    patho = df[intervar_col.str.contains("Pathogenic", na=False)]
+    print(f"\n[Pathogenic/LP 변이: {len(patho)}개]")
+
+    gene_col = next(
+        (c for c in df.columns if "Gene" in c and "refGene" in c), None
+    )
+    gene_counts = {}
+    if gene_col and not patho.empty:
+        gene_counts = patho.groupby(gene_col).size().sort_values(ascending=False).to_dict()
+        for gene, cnt in gene_counts.items():
+            print(f"  {gene}: {cnt}개")
+
+    # CSV 저장
+    patho.to_csv("${OUT_CSV}", index=False)
+    print(f"\n저장: ${OUT_CSV}")
+
+    # 웹 백엔드용 JSON 요약 출력
+    summary = {
+        "total_variants": len(df),
+        "pathogenic_lp": len(patho),
+        "acmg_counts": counts.to_dict(),
+        "gene_counts": gene_counts,
+    }
+    print("\n=== JSON_SUMMARY_START ===")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print("=== JSON_SUMMARY_END ===")
+
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
+# ── 메인 ──────────────────────────────────────────────────────────────────────
+main() {
+    resolve_inputs "$@"
+
+    local SAMPLE_DIR="${BASE_DIR}/samples/${SAMPLE_ID}"
+    local RESULT_DIR="${SAMPLE_DIR}/results"
+    mkdir -p "${RESULT_DIR}"
+
+    echo "=== [09] InterVar ACMG 분류 ==="
+    echo "  Sample ID : ${SAMPLE_ID}"
+    echo "  입력 VCF  : ${INPUT_VCF}"
+
+    install_intervar
+
+    local OUT_PREFIX="${RESULT_DIR}/${SAMPLE_ID}_intervar"
+    local OUT_CSV="${RESULT_DIR}/${SAMPLE_ID}_pathogenic.csv"
+
+    # InterVar 실행
+    cd "${INTERVAR_DIR}"
+    python InterVar.py \
+        -i  "${INPUT_VCF}" \
+        --input_type VCF \
+        -o  "${OUT_PREFIX}" \
+        -b  hg38 \
+        -t  intervardb \
+        --table_annovar=./table_annovar.pl \
+        --convert2annovar=./convert2annovar.pl \
+        --annotate_variation=./annotate_variation.pl \
+        -d  humandb/
+    cd - > /dev/null
+
+    # 결과 파일 경로
+    local RESULT_FILE="${OUT_PREFIX}.hg38_multianno.txt.intervar"
+
+    if [[ ! -f "${RESULT_FILE}" ]]; then
+        echo "ERROR: InterVar 결과 파일 없음: ${RESULT_FILE}" >&2
+        exit 1
+    fi
+
+    echo ""
+    echo "=== 결과 집계 ==="
+    summarize_results "${RESULT_FILE}" "${OUT_CSV}"
+
+    echo ""
+    echo "=== [09] 완료 ==="
+    echo "  SAMPLE_ID=${SAMPLE_ID}"
+    echo "  RESULT_FILE=${RESULT_FILE}"
+    echo "  PATHOGENIC_CSV=${OUT_CSV}"
+    echo "  NEXT_STEP=10_hapypy_validation.sh"
+}
+
+main "$@"
