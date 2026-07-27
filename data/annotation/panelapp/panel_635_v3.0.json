@@ -1,0 +1,76 @@
+{
+  "source_url": "https://panelapp.genomicsengland.co.uk/api/v1/panels/635/?version=3.0&format=json",
+  "retrieved_at": "2026-07-27T00:00:00+00:00",
+  "source_note": "Version-pinned educational snapshot of the NHS GMS signed-off PanelApp panel.",
+  "panel": {
+    "id": 635,
+    "name": "Inherited breast cancer and ovarian cancer",
+    "version": "3.0"
+  },
+  "genes": [
+    {
+      "gene_symbol": "ATM",
+      "confidence_level": "green",
+      "mode_of_inheritance": "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
+      "phenotypes": [
+        "Breast cancer, susceptibility to"
+      ]
+    },
+    {
+      "gene_symbol": "BARD1",
+      "confidence_level": "green",
+      "mode_of_inheritance": "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
+      "phenotypes": [
+        "Breast cancer, susceptibility to"
+      ]
+    },
+    {
+      "gene_symbol": "BRCA1",
+      "confidence_level": "green",
+      "mode_of_inheritance": "BOTH monoallelic and biallelic, autosomal or pseudoautosomal",
+      "phenotypes": [
+        "Breast-ovarian cancer, familial, 1"
+      ]
+    },
+    {
+      "gene_symbol": "BRCA2",
+      "confidence_level": "green",
+      "mode_of_inheritance": "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
+      "phenotypes": [
+        "Breast-ovarian cancer, familial, 2"
+      ]
+    },
+    {
+      "gene_symbol": "CHEK2",
+      "confidence_level": "green",
+      "mode_of_inheritance": "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
+      "phenotypes": [
+        "Breast cancer, susceptibility to"
+      ]
+    },
+    {
+      "gene_symbol": "PALB2",
+      "confidence_level": "green",
+      "mode_of_inheritance": "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
+      "phenotypes": [
+        "Breast cancer, susceptibility to"
+      ]
+    },
+    {
+      "gene_symbol": "RAD51C",
+      "confidence_level": "green",
+      "mode_of_inheritance": "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown",
+      "phenotypes": [
+        "Breast-ovarian cancer, familial, susceptibility to, 3"
+      ]
+    },
+    {
+      "gene_symbol": "RAD51D",
+      "confidence_level": "green",
+      "mode_of_inheritance": "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown",
+      "phenotypes": [
+        "Breast-ovarian cancer, familial, susceptibility to, 4"
+      ]
+    }
+  ]
+}
