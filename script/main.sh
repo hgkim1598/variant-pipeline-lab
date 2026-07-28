@@ -9,7 +9,8 @@
 # files for a FastAPI backend without changing the analysis logic.
 #
 # -----------------------------------------------------------------------------
-# CODE ORIGIN MAP (see docs/MAIN_SH_CODE_PRESERVATION.md for the full record)
+# CODE ORIGIN MAP
+# (full record: docs/MAIN_SH_COMPLETE_GUIDE.md — "24. 조원 코드 통합 판단")
 #
 #   The previous revision of this file was a concatenation of five independent
 #   scripts written by different team members. Line numbers below refer to that
@@ -33,7 +34,8 @@
 #                                                              run_annotation
 #   [F] lines 2161-2323         InterVar block      -> run_intervar
 #
-# CONFIRMED ERRORS REMOVED (evidence in docs/MAIN_SH_CODE_PRESERVATION.md):
+# CONFIRMED ERRORS REMOVED
+# (evidence: docs/MAIN_SH_COMPLETE_GUIDE.md — "24. 조원 코드 통합 판단"):
 #   - orphan backtick at line 2153 (whole file failed `bash -n`)
 #   - three top-level `main "$@"` calls (399, 1565, 2323)
 #   - top-level `exit 0` at 1397 which made lines 1398-2323 unreachable
@@ -850,7 +852,8 @@ Steps:
   99_finalization
 
 The core completion point is the raw VCF produced by 06_variant_calling.
-See docs/MAIN_SH_USAGE.md for the configuration and samplesheet format.
+설정(config)과 samplesheet 작성법은 docs/MAIN_SH_COMPLETE_GUIDE.md의
+"6. 실행 방법과 CLI option", "7. config 전체 설명", "8. samplesheet 전체 설명" 장을 보세요.
 USAGE
 }
 
@@ -1661,7 +1664,7 @@ validate_tools() {
         have_command "$tool" || missing+=("$tool")
     done
     if (( ${#missing[@]} > 0 )); then
-        step_check_fail "required_tools" "missing from PATH: ${missing[*]}. Install them before running (see docs/MAIN_SH_USAGE.md); the pipeline never installs software itself."
+        step_check_fail "required_tools" "missing from PATH: ${missing[*]}. 실행 전에 직접 설치하세요. 준비 방법은 docs/MAIN_SH_COMPLETE_GUIDE.md의 \"6. 실행 방법과 CLI option\"(실행 전 준비물)과 \"29. Linux smoke test 절차\" 장에 있습니다. 이 파이프라인은 도구를 스스로 설치하지 않습니다."
     else
         step_check_pass "required_tools" "all ${#required[@]} required tools found"
     fi
@@ -3238,8 +3241,9 @@ PYVC
 #
 # The presets are kept exactly as the original author wrote them, but they are
 # NOT endorsed as validated thresholds: they have not been evaluated against a
-# truth set for this project. That is why this step is off by default. See
-# docs/MAIN_SH_CODE_PRESERVATION.md for the re-activation condition.
+# truth set for this project. That is why this step is off by default. The
+# re-activation condition is in docs/MAIN_SH_COMPLETE_GUIDE.md —
+# "16. Optional filtering" (and "28. 현재 한계" for what is still unverified).
 # ---------------------------------------------------------------------------
 run_filtering() {
     start_step 08_filtering
@@ -3327,8 +3331,9 @@ run_filtering() {
 #   not carried over. Offline VEP is supported only when the bundle supplies a
 #   vep_cache AND the `vep` executable is present.
 #   PanelApp, BRCA Exchange, REVEL and SpliceAI are disease-panel features, not
-#   general germline WES steps, and are NOT implemented. They are documented in
-#   docs/MAIN_SH_CODE_PRESERVATION.md rather than faked.
+#   general germline WES steps, and are NOT implemented. Rather than being
+#   faked, they are documented in docs/MAIN_SH_COMPLETE_GUIDE.md —
+#   "17. Optional annotation" and "28. 현재 한계".
 # ---------------------------------------------------------------------------
 run_annotation() {
     start_step 10_annotation
@@ -3455,8 +3460,9 @@ run_annotation() {
 #   - the `-b hg38` build hard-coding (line 2295), which contradicted the b37
 #     resources used by the rest of the pipeline
 #   - `find ... | head -1` discovery of the input VCF (line 2192)
-# InterVar and its databases must be installed beforehand; see the setup
-# section of docs/MAIN_SH_USAGE.md.
+# InterVar and its databases must be installed beforehand; see
+# docs/MAIN_SH_COMPLETE_GUIDE.md — "18. Optional InterVar", and the setup
+# checklist in "6. 실행 방법과 CLI option" (실행 전 준비물).
 #
 # [RESULT WORDING] InterVar's own documentation describes a two-step process:
 #   automatic interpretation of evidence codes, followed by manual adjustment
@@ -3475,7 +3481,7 @@ run_intervar() {
 
     if [[ -z "$intervar_dir" || ! -d "$intervar_dir" ]]; then
         fail_step "intervar_not_installed" \
-            "intervar.install_dir is not set or does not exist. InterVar must be installed beforehand; this pipeline never clones or downloads it during a run. See docs/MAIN_SH_USAGE.md."
+            "intervar.install_dir is not set or does not exist. InterVar를 미리 설치해 두어야 합니다. 이 파이프라인은 실행 중에 clone하거나 다운로드하지 않습니다. 설치와 설정 방법은 docs/MAIN_SH_COMPLETE_GUIDE.md의 \"18. Optional InterVar\" 장을 보세요."
         return 1
     fi
     if [[ -z "$intervar_build" ]]; then
@@ -4367,7 +4373,8 @@ run_pipeline() {
 #
 # Bash cannot supervise arbitrary descendants. Cancellation terminates the
 # children this shell started; a grandchild that detached is not reachable.
-# The limitation is recorded in docs/MAIN_SH_ARCHITECTURE.md.
+# The limitation is recorded in docs/MAIN_SH_COMPLETE_GUIDE.md —
+# "28. 현재 한계".
 # =============================================================================
 on_signal() {
     local sig=$1
