@@ -1,0 +1,7 @@
+# Claude Code 개인 로컬 설정
+# 팀 공유용 .claude/settings.json 등 다른 설정 파일은 계속 추적합니다.
+.claude/settings.local.json
+**/.claude/settings.local.json
+
+# OS 생성 파일
+.DS_Store
