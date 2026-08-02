@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "kits": {
+    "example_idt_xgen_exome_v2": {
+      "status": "unconfirmed",
+      "manufacturer": "IDT",
+      "capture_kit_name": "xGen Exome Hyb Panel",
+      "capture_kit_version": "v2",
+      "design_id": "TODO_CONFIRMED_DESIGN_ID",
+      "genome_build": "GRCh38",
+      "source": "IDT official panel files",
+      "source_url": "https://www.idtdna.com/pages/products/next-generation-sequencing/workflow/xgen-ngs-hybridization-capture/pre-designed-hyb-cap-panels/exome-hyb-panel-v2",
+      "target_bed": "TODO_IDT_XGEN_V2_TARGETS_HG38_BED",
+      "target_bed_sha256": "TODO_64_CHARACTER_SHA256",
+      "coverage_bed": "TODO_IDT_XGEN_V2_PROBES_HG38_BED",
+      "coverage_bed_sha256": "TODO_64_CHARACTER_SHA256"
+    }
+  }
+}

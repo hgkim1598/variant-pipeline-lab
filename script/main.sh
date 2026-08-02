@@ -80,7 +80,7 @@ set -Eeuo pipefail
 # 0. Pipeline metadata and defaults
 # =============================================================================
 PIPELINE_NAME="variant-pipeline-lab-wes"
-PIPELINE_VERSION="1.0.0"
+PIPELINE_VERSION="1.2.0"
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 
 # Defaults applied when the run config omits an optional key.
@@ -221,7 +221,22 @@ BUNDLE_ID=""
 ASSEMBLY=""
 CONTIG_STYLE=""
 REF_FASTA=""
+CAPTURE_KIT_ID=""
+CAPTURE_KIT_REGISTRY=""
+CAPTURE_KIT_MODE="direct"
 TARGET_BED=""
+TARGET_BED_STATUS=""
+TARGET_BED_MANUFACTURER=""
+TARGET_BED_CAPTURE_KIT_NAME=""
+TARGET_BED_CAPTURE_KIT_VERSION=""
+TARGET_BED_DESIGN_ID=""
+TARGET_BED_GENOME_BUILD=""
+TARGET_BED_SOURCE=""
+TARGET_BED_SOURCE_URL=""
+TARGET_BED_FILE_NAME=""
+TARGET_BED_SHA256=""
+COVERAGE_BED=""
+COVERAGE_BED_SHA256=""
 DBSNP_VCF=""
 CLINVAR_VCF=""
 VEP_CACHE=""
@@ -956,6 +971,152 @@ parse_args() {
 }
 
 # ---------------------------------------------------------------------------
+# resolve_capture_kit_profile
+#
+# The UI/backend submits a stable capture_kit.id, not an arbitrary server path.
+# This function resolves that ID through an operator-managed registry and
+# replaces the direct BED fields with the selected, versioned profile. Paths in
+# the registry are resolved relative to the registry file itself. A run may use
+# either registry mode or the legacy direct resource_bundle fields, never both.
+# ---------------------------------------------------------------------------
+resolve_capture_kit_profile() {
+    CAPTURE_KIT_ID=$(trim_ws "$CAPTURE_KIT_ID")
+    CAPTURE_KIT_REGISTRY=$(trim_ws "$CAPTURE_KIT_REGISTRY")
+
+    if [[ -z "$CAPTURE_KIT_ID" && -z "$CAPTURE_KIT_REGISTRY" ]]; then
+        CAPTURE_KIT_MODE="direct"
+        [[ -n "$COVERAGE_BED" ]] || COVERAGE_BED="$TARGET_BED"
+        [[ -n "$COVERAGE_BED_SHA256" ]] || COVERAGE_BED_SHA256="$TARGET_BED_SHA256"
+        return 0
+    fi
+
+    [[ -n "$CAPTURE_KIT_ID" ]] \
+        || die "capture_kit.id is required when capture_kit.registry is set"
+    [[ -n "$CAPTURE_KIT_REGISTRY" ]] \
+        || die "capture_kit.registry is required when capture_kit.id is set"
+    [[ "$CAPTURE_KIT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || die "capture_kit.id contains unsupported characters: '$CAPTURE_KIT_ID'"
+    is_placeholder "$CAPTURE_KIT_ID" \
+        && die "capture_kit.id is still a template placeholder: '$CAPTURE_KIT_ID'"
+    is_placeholder "$CAPTURE_KIT_REGISTRY" \
+        && die "capture_kit.registry is still a template placeholder: '$CAPTURE_KIT_REGISTRY'"
+
+    # Avoid two competing sources of truth. The backend should submit only the
+    # kit ID/registry; the selected profile supplies every BED and metadata
+    # field below.
+    if [[ -n "$(trim_ws "$TARGET_BED")" || -n "$(trim_ws "$TARGET_BED_STATUS")" \
+          || -n "$(trim_ws "$COVERAGE_BED")" ]]; then
+        die "capture_kit registry mode cannot be combined with direct resource_bundle target/coverage BED fields"
+    fi
+
+    CAPTURE_KIT_REGISTRY=$(normalize_path "$CAPTURE_KIT_REGISTRY")
+    require_readable_file "$CAPTURE_KIT_REGISTRY" "Capture-kit registry"
+
+    local profile_tmp
+    profile_tmp=$(mktemp "${TMPDIR:-/tmp}/capture-kit-profile.XXXXXX") \
+        || die "Could not create a temporary file for capture-kit resolution"
+
+    if ! "$(resolve_python)" - "$CAPTURE_KIT_REGISTRY" "$CAPTURE_KIT_ID" > "$profile_tmp" <<'PYKIT'
+import json, os, re, sys
+
+registry_path, kit_id = sys.argv[1:3]
+try:
+    with open(registry_path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception as exc:  # noqa: BLE001
+    print(f"cannot read capture-kit registry {registry_path}: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+if str(doc.get("schema_version", "")) != "1.0":
+    print("capture-kit registry schema_version must be '1.0'", file=sys.stderr)
+    sys.exit(2)
+kits = doc.get("kits")
+if not isinstance(kits, dict):
+    print("capture-kit registry must contain an object named 'kits'", file=sys.stderr)
+    sys.exit(2)
+profile = kits.get(kit_id)
+if not isinstance(profile, dict):
+    available = ", ".join(sorted(kits)) or "<none>"
+    print(f"capture kit '{kit_id}' is not registered; available: {available}", file=sys.stderr)
+    sys.exit(3)
+
+required = (
+    "status", "manufacturer", "capture_kit_name", "capture_kit_version",
+    "design_id", "genome_build", "source", "target_bed",
+    "target_bed_sha256",
+)
+missing = [key for key in required if not str(profile.get(key, "")).strip()]
+if missing:
+    print(f"capture-kit profile '{kit_id}' is missing: {', '.join(missing)}", file=sys.stderr)
+    sys.exit(4)
+
+base = os.path.dirname(os.path.realpath(registry_path))
+
+
+def path_value(key, fallback=""):
+    raw = str(profile.get(key, fallback) or "").strip()
+    if not raw:
+        return ""
+    raw = os.path.expanduser(raw)
+    return os.path.realpath(raw if os.path.isabs(raw) else os.path.join(base, raw))
+
+
+target_bed = path_value("target_bed")
+coverage_bed = path_value("coverage_bed", profile["target_bed"])
+target_sha = str(profile["target_bed_sha256"]).strip().lower()
+coverage_sha = str(profile.get("coverage_bed_sha256", target_sha)).strip().lower()
+for label, value in (("target_bed_sha256", target_sha),
+                     ("coverage_bed_sha256", coverage_sha)):
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        print(f"capture-kit profile '{kit_id}' has an invalid {label}", file=sys.stderr)
+        sys.exit(4)
+
+values = (
+    str(profile["status"]).strip(),
+    str(profile["manufacturer"]).strip(),
+    str(profile["capture_kit_name"]).strip(),
+    str(profile["capture_kit_version"]).strip(),
+    str(profile["design_id"]).strip(),
+    str(profile["genome_build"]).strip(),
+    str(profile["source"]).strip(),
+    str(profile.get("source_url", "") or "").strip(),
+    target_bed,
+    os.path.basename(target_bed),
+    target_sha,
+    coverage_bed,
+    coverage_sha,
+)
+for value in values:
+    sys.stdout.buffer.write(value.encode("utf-8") + b"\0")
+PYKIT
+    then
+        rm -f -- "$profile_tmp"
+        die "Could not resolve capture-kit profile '$CAPTURE_KIT_ID'"
+    fi
+
+    local -a profile=()
+    mapfile -d '' -t profile < "$profile_tmp"
+    rm -f -- "$profile_tmp"
+    [[ ${#profile[@]} -eq 13 ]] \
+        || die "Capture-kit registry returned an incomplete profile for '$CAPTURE_KIT_ID'"
+
+    TARGET_BED_STATUS=${profile[0]}
+    TARGET_BED_MANUFACTURER=${profile[1]}
+    TARGET_BED_CAPTURE_KIT_NAME=${profile[2]}
+    TARGET_BED_CAPTURE_KIT_VERSION=${profile[3]}
+    TARGET_BED_DESIGN_ID=${profile[4]}
+    TARGET_BED_GENOME_BUILD=${profile[5]}
+    TARGET_BED_SOURCE=${profile[6]}
+    TARGET_BED_SOURCE_URL=${profile[7]}
+    TARGET_BED=${profile[8]}
+    TARGET_BED_FILE_NAME=${profile[9]}
+    TARGET_BED_SHA256=${profile[10]}
+    COVERAGE_BED=${profile[11]}
+    COVERAGE_BED_SHA256=${profile[12]}
+    CAPTURE_KIT_MODE="registry"
+}
+
+# ---------------------------------------------------------------------------
 # load_config — read every value from the run config.
 #
 # Nothing here is hard-coded to a sample, a reference or a directory: changing
@@ -986,10 +1147,24 @@ load_config() {
     RESUME_STRICT_CHECKSUMS=$(json_get "$CONFIG_PATH" resume_strict_checksums false)
 
     BUNDLE_ID=$(json_get "$CONFIG_PATH" resource_bundle.bundle_id "")
+    CAPTURE_KIT_ID=$(json_get "$CONFIG_PATH" capture_kit.id "")
+    CAPTURE_KIT_REGISTRY=$(json_get "$CONFIG_PATH" capture_kit.registry "")
     ASSEMBLY=$(json_get "$CONFIG_PATH" resource_bundle.assembly "")
     CONTIG_STYLE=$(json_get "$CONFIG_PATH" resource_bundle.contig_style "")
     REF_FASTA=$(json_get "$CONFIG_PATH" resource_bundle.reference_fasta "")
     TARGET_BED=$(json_get "$CONFIG_PATH" resource_bundle.target_bed "")
+    TARGET_BED_STATUS=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.status "")
+    TARGET_BED_MANUFACTURER=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.manufacturer "")
+    TARGET_BED_CAPTURE_KIT_NAME=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.capture_kit_name "")
+    TARGET_BED_CAPTURE_KIT_VERSION=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.capture_kit_version "")
+    TARGET_BED_DESIGN_ID=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.design_id "")
+    TARGET_BED_GENOME_BUILD=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.genome_build "")
+    TARGET_BED_SOURCE=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.source "")
+    TARGET_BED_SOURCE_URL=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.source_url "")
+    TARGET_BED_FILE_NAME=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.file_name "")
+    TARGET_BED_SHA256=$(json_get "$CONFIG_PATH" resource_bundle.target_bed_metadata.sha256 "")
+    COVERAGE_BED=$(json_get "$CONFIG_PATH" resource_bundle.coverage_bed "")
+    COVERAGE_BED_SHA256=$(json_get "$CONFIG_PATH" resource_bundle.coverage_bed_sha256 "")
     DBSNP_VCF=$(json_get "$CONFIG_PATH" resource_bundle.dbsnp_vcf "")
     CLINVAR_VCF=$(json_get "$CONFIG_PATH" resource_bundle.clinvar_vcf "")
     VEP_CACHE=$(json_get "$CONFIG_PATH" resource_bundle.vep_cache "")
@@ -1005,6 +1180,8 @@ load_config() {
     OPT_FILTERING=$(json_get "$CONFIG_PATH" optional_steps.filtering false)
     OPT_ANNOTATION=$(json_get "$CONFIG_PATH" optional_steps.annotation false)
     OPT_INTERVAR=$(json_get "$CONFIG_PATH" optional_steps.intervar false)
+
+    resolve_capture_kit_profile
 }
 
 normalize_config() {
@@ -1014,10 +1191,24 @@ normalize_config() {
     [[ -n "$SAMPLESHEET" ]] || die "samplesheet is required in the run config"
     [[ -n "$OUTPUT_ROOT" ]] || die "output_root is required in the run config"
 
+    REF_FASTA=$(trim_ws "$REF_FASTA")
+    TARGET_BED=$(trim_ws "$TARGET_BED")
+    COVERAGE_BED=$(trim_ws "$COVERAGE_BED")
+    [[ -n "$REF_FASTA" ]] || die "resource_bundle.reference_fasta is required"
+    [[ -n "$TARGET_BED" ]] || die "resource_bundle.target_bed is required"
+    [[ -n "$COVERAGE_BED" ]] || COVERAGE_BED="$TARGET_BED"
+    is_placeholder "$REF_FASTA" \
+        && die "resource_bundle.reference_fasta is still a template placeholder: '$REF_FASTA'"
+    is_placeholder "$TARGET_BED" \
+        && die "resource_bundle.target_bed is still a template placeholder: '$TARGET_BED'. Do not guess a GRCh38 BED path; confirm the exact assay design first."
+    is_placeholder "$COVERAGE_BED" \
+        && die "resource_bundle.coverage_bed is still a template placeholder: '$COVERAGE_BED'"
+
     SAMPLESHEET=$(normalize_path "$SAMPLESHEET")
     OUTPUT_ROOT=$(normalize_path "$OUTPUT_ROOT")
     [[ -n "$REF_FASTA" ]] && REF_FASTA=$(normalize_path "$REF_FASTA")
     [[ -n "$TARGET_BED" ]] && TARGET_BED=$(normalize_path "$TARGET_BED")
+    [[ -n "$COVERAGE_BED" ]] && COVERAGE_BED=$(normalize_path "$COVERAGE_BED")
     [[ -n "$DBSNP_VCF" && "$DBSNP_VCF" != "null" ]] && DBSNP_VCF=$(normalize_path "$DBSNP_VCF") || DBSNP_VCF=""
     [[ -n "$CLINVAR_VCF" && "$CLINVAR_VCF" != "null" ]] && CLINVAR_VCF=$(normalize_path "$CLINVAR_VCF") || CLINVAR_VCF=""
     [[ -n "$VEP_CACHE" && "$VEP_CACHE" != "null" ]] && VEP_CACHE=$(normalize_path "$VEP_CACHE") || VEP_CACHE=""
@@ -1071,6 +1262,47 @@ contig_style describes the chromosome naming convention only:
   chr   | ucsc              contigs are named chr1, chr2, ... chrM
 An assembly or build name (GRCh38, hg38, ...) is not a contig style; declare that in resource_bundle.assembly instead."
     fi
+
+    # ---- target BED provenance contract ------------------------------------
+    # Coordinate checks can reject malformed or structurally incompatible BEDs,
+    # but they cannot prove that a BED belongs to the capture design used for
+    # this sample. That provenance is therefore explicit, fail-closed metadata.
+    # The field names are vendor-neutral: Agilent, Twist, IDT or a custom design
+    # can be selected by changing config only.
+    local metadata_var metadata_key
+    for metadata_var in TARGET_BED_STATUS TARGET_BED_MANUFACTURER TARGET_BED_CAPTURE_KIT_NAME \
+                        TARGET_BED_CAPTURE_KIT_VERSION TARGET_BED_DESIGN_ID \
+                        TARGET_BED_GENOME_BUILD TARGET_BED_SOURCE \
+                        TARGET_BED_FILE_NAME TARGET_BED_SHA256; do
+        printf -v "$metadata_var" '%s' "$(trim_ws "${!metadata_var}")"
+        metadata_key=${metadata_var#TARGET_BED_}
+        metadata_key=$(printf '%s' "$metadata_key" | tr '[:upper:]' '[:lower:]')
+        [[ -n "${!metadata_var}" ]] \
+            || die "resource_bundle.target_bed_metadata.${metadata_key} is required"
+        is_placeholder "${!metadata_var}" \
+            && die "resource_bundle.target_bed_metadata.${metadata_key} is unresolved: '${!metadata_var}'"
+    done
+    TARGET_BED_SOURCE_URL=$(trim_ws "$TARGET_BED_SOURCE_URL")
+    if [[ -n "$TARGET_BED_SOURCE_URL" ]] && is_placeholder "$TARGET_BED_SOURCE_URL"; then
+        die "resource_bundle.target_bed_metadata.source_url is unresolved: '$TARGET_BED_SOURCE_URL'"
+    fi
+
+    TARGET_BED_STATUS=$(printf '%s' "$TARGET_BED_STATUS" | tr '[:upper:]' '[:lower:]')
+    [[ "$TARGET_BED_STATUS" == "confirmed" ]] \
+        || die "resource_bundle.target_bed_metadata.status must be 'confirmed' before analysis (got '$TARGET_BED_STATUS'). Keep it 'unconfirmed' while the exact kit/design/BED is unresolved."
+    [[ "${TARGET_BED_GENOME_BUILD,,}" == "${ASSEMBLY,,}" ]] \
+        || die "target BED genome_build '$TARGET_BED_GENOME_BUILD' does not match resource_bundle.assembly '$ASSEMBLY'"
+    [[ "$TARGET_BED_FILE_NAME" == "$(basename -- "$TARGET_BED")" ]] \
+        || die "target BED metadata file_name '$TARGET_BED_FILE_NAME' does not match the configured path basename '$(basename -- "$TARGET_BED")'"
+    TARGET_BED_SHA256=$(printf '%s' "$TARGET_BED_SHA256" | tr '[:upper:]' '[:lower:]')
+    [[ "$TARGET_BED_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+        || die "resource_bundle.target_bed_metadata.sha256 must be a 64-character SHA-256 digest"
+    COVERAGE_BED_SHA256=$(trim_ws "$COVERAGE_BED_SHA256")
+    [[ -n "$COVERAGE_BED_SHA256" ]] || COVERAGE_BED_SHA256="$TARGET_BED_SHA256"
+    COVERAGE_BED_SHA256=$(printf '%s' "$COVERAGE_BED_SHA256" | tr '[:upper:]' '[:lower:]')
+    [[ "$COVERAGE_BED_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+        || die "coverage BED SHA-256 must be a 64-character digest"
+    [[ -n "$CAPTURE_KIT_ID" ]] || CAPTURE_KIT_ID="$TARGET_BED_DESIGN_ID"
 
     RUN_DIR="$OUTPUT_ROOT/$RUN_ID"
     CONFIG_DIR="$RUN_DIR/config"
@@ -1134,6 +1366,7 @@ Results of different run_id values are always kept separate, even for the same s
     log "run_dir    : $RUN_DIR"
     log "samplesheet: $SAMPLESHEET"
     log "bundle     : ${BUNDLE_ID:-<unnamed>} (assembly=${ASSEMBLY:-?}, contig_style=${CONTIG_STYLE:-?})"
+    log "capture kit: ${CAPTURE_KIT_ID:-<direct>} (mode=$CAPTURE_KIT_MODE)"
     log "threads    : $THREADS   java_mem_gb: $JAVA_MEM_GB   trim_mode: $TRIM_MODE"
     log "============================================================"
 }
@@ -1179,7 +1412,14 @@ render_config_snapshot() {
         "$JAVA_MEM_GB" "$INTERVAL_PADDING" "$MOSDEPTH_MAPQ" "$LOW_COVERAGE_DEPTH" \
         "$MIN_RAM_GB" "$COVERAGE_MIN_MEAN_DEPTH" "$TRIM_MODE" \
         "$BQSR_TARGET_ONLY" "$BQSR_DIAGNOSTICS" \
+        "$CAPTURE_KIT_ID" "$CAPTURE_KIT_REGISTRY" "$CAPTURE_KIT_MODE" \
         "$BUNDLE_ID" "$ASSEMBLY" "$CONTIG_STYLE" "$REF_FASTA" "$TARGET_BED" \
+        "$TARGET_BED_STATUS" "$TARGET_BED_MANUFACTURER" \
+        "$TARGET_BED_CAPTURE_KIT_NAME" "$TARGET_BED_CAPTURE_KIT_VERSION" \
+        "$TARGET_BED_DESIGN_ID" "$TARGET_BED_GENOME_BUILD" \
+        "$TARGET_BED_SOURCE" "$TARGET_BED_SOURCE_URL" \
+        "$TARGET_BED_FILE_NAME" "$TARGET_BED_SHA256" \
+        "$COVERAGE_BED" "$COVERAGE_BED_SHA256" \
         "$DBSNP_VCF" "$CLINVAR_VCF" "$VEP_CACHE" "$TRUTH_VCF" "$TRUTH_BED" \
         "$known_sites_json" "$OPT_FILTERING" "$OPT_ANNOTATION" "$OPT_INTERVAR" \
         "$RESUME_STRICT_CHECKSUMS" "$JSON_SCHEMA_VERSION" <<'PYSNAP' | tr -d '\r'
@@ -1190,10 +1430,17 @@ import hashlib, json, os, sys
  java_mem_gb, interval_padding, mosdepth_mapq, low_coverage_depth,
  min_ram_gb, coverage_min_mean_depth, trim_mode,
  bqsr_target_only, bqsr_diagnostics,
+ capture_kit_id, capture_kit_registry, capture_kit_mode,
  bundle_id, assembly, contig_style, ref_fasta, target_bed,
+ target_bed_status, target_bed_manufacturer,
+ target_bed_capture_kit_name, target_bed_capture_kit_version,
+ target_bed_design_id, target_bed_genome_build,
+ target_bed_source, target_bed_source_url,
+ target_bed_file_name, target_bed_sha256,
+ coverage_bed, coverage_bed_sha256,
  dbsnp, clinvar, vep_cache, truth_vcf, truth_bed,
  known_sites_json, opt_filtering, opt_annotation, opt_intervar,
- strict_checksums, schema_version) = sys.argv[1:38]
+ strict_checksums, schema_version) = sys.argv[1:53]
 
 
 def nn(v):
@@ -1223,12 +1470,31 @@ doc = {
     "bqsr_diagnostics": bqsr_diagnostics == "true",
     "assay": "WES",
     "library_layout": "paired-end",
+    "capture_kit": {
+        "id": capture_kit_id,
+        "mode": capture_kit_mode,
+        "registry": nn(capture_kit_registry),
+    },
     "resource_bundle": {
         "bundle_id": nn(bundle_id),
         "assembly": nn(assembly),
         "contig_style": nn(contig_style),
         "reference_fasta": nn(ref_fasta),
         "target_bed": nn(target_bed),
+        "target_bed_metadata": {
+            "status": target_bed_status,
+            "manufacturer": target_bed_manufacturer,
+            "capture_kit_name": target_bed_capture_kit_name,
+            "capture_kit_version": target_bed_capture_kit_version,
+            "design_id": target_bed_design_id,
+            "genome_build": target_bed_genome_build,
+            "source": target_bed_source,
+            "source_url": nn(target_bed_source_url),
+            "file_name": target_bed_file_name,
+            "sha256": target_bed_sha256,
+        },
+        "coverage_bed": nn(coverage_bed),
+        "coverage_bed_sha256": coverage_bed_sha256,
         "known_sites": json.loads(known_sites_json),
         "dbsnp_vcf": nn(dbsnp),
         "clinvar_vcf": nn(clinvar),
@@ -1278,7 +1544,9 @@ def stat_fingerprint(path):
 resource_identity = {}
 for label, path in [("samplesheet", samplesheet),
                     ("reference_fasta", ref_fasta),
-                    ("target_bed", target_bed)]:
+                    ("target_bed", target_bed),
+                    ("coverage_bed", coverage_bed),
+                    ("capture_kit_registry", capture_kit_registry)]:
     if path:
         resource_identity[label] = sha256_of(path)
 for i, ks in enumerate(doc["resource_bundle"]["known_sites"]):
@@ -1593,12 +1861,13 @@ validate_reference_bundle() {
     local rc=0
 
     set +e
-    "$(resolve_python)" - "$REF_FASTA" "$TARGET_BED" "$CONTIG_STYLE" "$DBSNP_VCF" \
+    "$(resolve_python)" - "$REF_FASTA" "$TARGET_BED" "$COVERAGE_BED" \
+        "$CONTIG_STYLE" "$DBSNP_VCF" "$TARGET_BED_SHA256" "$COVERAGE_BED_SHA256" \
         ${KNOWN_SITES[@]+"${KNOWN_SITES[@]}"} > "$report" 2>&1 <<'PYBUNDLE'
-import os, re, subprocess, sys
+import hashlib, os, re, subprocess, sys
 from collections import defaultdict
 
-ref, bed, contig_style, dbsnp, *known_sites = sys.argv[1:]
+ref, bed, coverage_bed, contig_style, dbsnp, expected_bed_sha256, expected_coverage_sha256, *known_sites = sys.argv[1:]
 errors, notes = [], []
 
 
@@ -1612,6 +1881,7 @@ def need(path, label):
 
 ref_ok = need(ref, "reference_fasta")
 bed_ok = need(bed, "target_bed")
+coverage_bed_ok = need(coverage_bed, "coverage_bed")
 
 fai = ref + ".fai"
 dict_path = os.path.splitext(ref)[0] + ".dict"
@@ -1675,8 +1945,20 @@ if ref_contigs:
             "An assembly or build name is not a contig style.")
     notes.append(f"contig style: declared='{contig_style}', chr-prefixed={chr_prefixed}/{len(ref_contigs)}")
 
-bed_rows = bed_merged_rows = bed_raw_bases = bed_merged_bases = 0
-if bed_ok and ref_contigs:
+def check_bed(path, label, expected_sha256):
+    rows = merged_rows = raw_bases = merged_bases = 0
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual_sha256 = digest.hexdigest()
+    if actual_sha256.lower() != expected_sha256.lower():
+        errors.append(
+            f"{label} SHA-256 mismatch: "
+            f"metadata={expected_sha256.lower()} actual={actual_sha256.lower()}")
+    else:
+        notes.append(f"{label} SHA-256 verified: {actual_sha256}")
+
     lengths, order = {}, {}
     with open(fai, encoding="utf-8") as fh:
         for i, line in enumerate(fh):
@@ -1685,27 +1967,27 @@ if bed_ok and ref_contigs:
                 lengths[f[0]] = int(f[1]); order[f[0]] = i
     ivs = defaultdict(list)
     try:
-        with open(bed, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line_no, line in enumerate(fh, 1):
                 if not line.strip() or line.startswith(("#", "track", "browser")):
                     continue
                 f = line.rstrip().split("\t")
                 if len(f) < 3:
-                    raise ValueError(f"BED line {line_no}: fewer than 3 columns")
+                    raise ValueError(f"{label} line {line_no}: fewer than 3 columns")
                 try:
                     start, end = int(f[1]), int(f[2])
                 except ValueError:
-                    raise ValueError(f"BED line {line_no}: start/end are not integers")
+                    raise ValueError(f"{label} line {line_no}: start/end are not integers")
                 chrom = f[0]
                 if chrom not in lengths:
-                    raise ValueError(f"BED line {line_no}: contig absent from reference: {chrom}")
+                    raise ValueError(f"{label} line {line_no}: contig absent from reference: {chrom}")
                 if start < 0 or end <= start or end > lengths[chrom]:
-                    raise ValueError(f"BED line {line_no}: interval out of range {chrom}:{start}-{end}")
-                bed_rows += 1
-                bed_raw_bases += end - start
+                    raise ValueError(f"{label} line {line_no}: interval out of range {chrom}:{start}-{end}")
+                rows += 1
+                raw_bases += end - start
                 ivs[chrom].append((start, end))
-        if bed_rows == 0:
-            raise ValueError("target BED contains no usable intervals")
+        if rows == 0:
+            raise ValueError(f"{label} contains no usable intervals")
         for chrom in sorted(ivs, key=lambda c: (order[c], c)):
             merged = []
             for s, e in sorted(ivs[chrom]):
@@ -1713,12 +1995,23 @@ if bed_ok and ref_contigs:
                     merged.append([s, e])
                 elif e > merged[-1][1]:
                     merged[-1][1] = e
-            bed_merged_rows += len(merged)
-            bed_merged_bases += sum(e - s for s, e in merged)
-        notes.append(f"target BED: rows={bed_rows}, non-overlap rows={bed_merged_rows}, "
-                     f"non-overlap bases={bed_merged_bases}")
+            merged_rows += len(merged)
+            merged_bases += sum(e - s for s, e in merged)
+        notes.append(f"{label}: rows={rows}, non-overlap rows={merged_rows}, "
+                     f"non-overlap bases={merged_bases}")
     except ValueError as exc:
         errors.append(str(exc))
+    return rows, merged_rows, raw_bases, merged_bases
+
+
+bed_rows = bed_merged_rows = bed_raw_bases = bed_merged_bases = 0
+coverage_rows = coverage_merged_rows = coverage_raw_bases = coverage_merged_bases = 0
+if bed_ok and ref_contigs:
+    bed_rows, bed_merged_rows, bed_raw_bases, bed_merged_bases = check_bed(
+        bed, "target BED", expected_bed_sha256)
+if coverage_bed_ok and ref_contigs:
+    coverage_rows, coverage_merged_rows, coverage_raw_bases, coverage_merged_bases = check_bed(
+        coverage_bed, "coverage BED", expected_coverage_sha256)
 
 CONTIG_LEN_RE = re.compile(r"##contig=<([^>]*)>")
 
@@ -1810,6 +2103,9 @@ print("[NOTE] Structural compatibility is not proof of shared build provenance; 
 print(f"METRIC target_rows={bed_rows}")
 print(f"METRIC target_merged_rows={bed_merged_rows}")
 print(f"METRIC target_merged_bases={bed_merged_bases}")
+print(f"METRIC coverage_rows={coverage_rows}")
+print(f"METRIC coverage_merged_rows={coverage_merged_rows}")
+print(f"METRIC coverage_merged_bases={coverage_merged_bases}")
 PYBUNDLE
     rc=$?
     set -e
@@ -1822,7 +2118,7 @@ PYBUNDLE
     # Wording is deliberate: the checks above compare contig names, contig
     # lengths and coordinate ranges. They do not establish that every file came
     # from the same assembly release, so this must not read as "build verified".
-    step_check_pass "resource_bundle" "reference, indexes, target BED, known-sites and dbSNP are structurally compatible (declared assembly=${ASSEMBLY}, contig_style=${CONTIG_STYLE}); build provenance is asserted by the bundle, not proven here"
+    step_check_pass "resource_bundle" "reference, indexes, target/coverage BEDs, known-sites and dbSNP are structurally compatible (declared assembly=${ASSEMBLY}, contig_style=${CONTIG_STYLE}); build provenance is asserted by the bundle, not proven here"
 
     local key value
     while IFS='=' read -r key value; do
@@ -1832,8 +2128,21 @@ PYBUNDLE
     step_metric assembly "$ASSEMBLY" str
     step_metric contig_style "$CONTIG_STYLE" str
     step_metric bundle_id "${BUNDLE_ID:-unset}" str
+    step_metric capture_kit_id "$CAPTURE_KIT_ID" str
+    step_metric capture_kit_mode "$CAPTURE_KIT_MODE" str
+    step_metric target_bed_status "$TARGET_BED_STATUS" str
+    step_metric target_bed_manufacturer "$TARGET_BED_MANUFACTURER" str
+    step_metric target_bed_capture_kit_name "$TARGET_BED_CAPTURE_KIT_NAME" str
+    step_metric target_bed_capture_kit_version "$TARGET_BED_CAPTURE_KIT_VERSION" str
+    step_metric target_bed_design_id "$TARGET_BED_DESIGN_ID" str
+    step_metric target_bed_genome_build "$TARGET_BED_GENOME_BUILD" str
+    step_metric target_bed_source "$TARGET_BED_SOURCE" str
+    step_metric target_bed_sha256 "$TARGET_BED_SHA256" str
+    step_metric coverage_bed_sha256 "$COVERAGE_BED_SHA256" str
     step_input reference_fasta "$REF_FASTA"
     step_input target_bed "$TARGET_BED"
+    step_input coverage_bed "$COVERAGE_BED"
+    [[ -n "$CAPTURE_KIT_REGISTRY" ]] && step_input capture_kit_registry "$CAPTURE_KIT_REGISTRY"
     local ks
     for ks in ${KNOWN_SITES[@]+"${KNOWN_SITES[@]}"}; do step_input known_sites "$ks"; done
     if [[ -n "$DBSNP_VCF" ]]; then step_input dbsnp_vcf "$DBSNP_VCF"; fi
@@ -1841,11 +2150,11 @@ PYBUNDLE
     # Resource checksums (reused from the Processing source section 5).
     : > "$RESOURCE_SHA256"
     local res
-    for res in "$REF_FASTA" "$TARGET_BED" ${KNOWN_SITES[@]+"${KNOWN_SITES[@]}"}; do
+    for res in "$REF_FASTA" "$TARGET_BED" "$COVERAGE_BED" ${KNOWN_SITES[@]+"${KNOWN_SITES[@]}"}; do
         [[ -f "$res" ]] && printf '%s  %s\n' "$(sha256_file "$res")" "$res" >> "$RESOURCE_SHA256"
     done
     add_artifact resource_checksums "Resource checksums" "$RESOURCE_SHA256" 1 0 \
-        "sha256 of reference, target BED and known-sites"
+        "sha256 of reference, target/coverage BEDs and known-sites"
     add_artifact validation_report "Resource validation report" "$report" 1 0 "Resource bundle preflight output"
     return 0
 }
@@ -3085,23 +3394,23 @@ run_coverage_qc() {
     samtools quickcheck -q "$ANALYSIS_READY_BAM" \
         || { fail_step "bam_invalid" "samtools quickcheck failed on the analysis-ready BAM"; return 1; }
 
-    [[ -s "$TARGET_BED" ]] || { fail_step "missing_target_bed" "target_bed is required for WES coverage QC and is missing: $TARGET_BED. There is no fallback target."; return 1; }
-    step_input target_bed "$TARGET_BED"
+    [[ -s "$COVERAGE_BED" ]] || { fail_step "missing_coverage_bed" "coverage_bed is required for WES coverage QC and is missing: $COVERAGE_BED"; return 1; }
+    step_input coverage_bed "$COVERAGE_BED"
 
-    local merged_bed="$stage_dir/target.nonoverlap.bed"
+    local merged_bed="$stage_dir/coverage.nonoverlap.bed"
     local prefix="$stage_dir/${SAMPLE_ID}.mosdepth"
     local bam_contigs="$STEP_WORK/bam_contigs.txt"
-    local bed_check="$stage_dir/target_bed_check.txt"
+    local bed_check="$stage_dir/coverage_bed_check.txt"
 
     samtools view -H "$ANALYSIS_READY_BAM" \
         | awk '/^@SQ/ {for (i=1;i<=NF;i++) if ($i ~ /^SN:/) print substr($i,4)}' > "$bam_contigs"
 
     local rc=0
     set +e
-    "$(resolve_python)" - "$TARGET_BED" "${REF_FASTA}.fai" "$merged_bed" "$bam_contigs" > "$bed_check" 2>&1 <<'PYMERGE'
+    "$(resolve_python)" - "$COVERAGE_BED" "${REF_FASTA}.fai" "$merged_bed" "$bam_contigs" > "$bed_check" 2>&1 <<'PYMERGE'
 import sys
 from collections import defaultdict
-target, fai, out, bam_contigs_path = sys.argv[1:5]
+coverage_bed, fai, out, bam_contigs_path = sys.argv[1:5]
 
 order = {}
 with open(fai, encoding="utf-8") as fh:
@@ -3113,7 +3422,7 @@ bam_contigs = {l.strip() for l in open(bam_contigs_path, encoding="utf-8") if l.
 
 ivs = defaultdict(list)
 bed_contigs = set()
-with open(target, encoding="utf-8") as fh:
+with open(coverage_bed, encoding="utf-8") as fh:
     for line_no, line in enumerate(fh, 1):
         if not line.strip() or line.startswith(("#", "track", "browser")):
             continue
@@ -3127,11 +3436,11 @@ with open(target, encoding="utf-8") as fh:
         bed_contigs.add(f[0]); ivs[f[0]].append((s, e))
 
 if not ivs:
-    print("[ERROR] target BED contains no usable intervals"); sys.exit(2)
+    print("[ERROR] coverage BED contains no usable intervals"); sys.exit(2)
 
 missing = sorted(bed_contigs - bam_contigs)
 if bam_contigs and missing:
-    print(f"[ERROR] target BED contigs absent from the BAM header: {missing[:10]}"); sys.exit(2)
+    print(f"[ERROR] coverage BED contigs absent from the BAM header: {missing[:10]}"); sys.exit(2)
 
 merged_rows = merged_bases = 0
 with open(out, "w", encoding="utf-8") as w:
@@ -3146,18 +3455,18 @@ with open(out, "w", encoding="utf-8") as w:
             w.write(f"{chrom}\t{s}\t{e}\n")
             merged_rows += 1; merged_bases += e - s
 
-print("[OK] non-overlapping target BED created")
-print(f"METRIC target_intervals={merged_rows}")
-print(f"METRIC target_nonoverlap_bases={merged_bases}")
+print("[OK] non-overlapping coverage BED created")
+print(f"METRIC coverage_intervals={merged_rows}")
+print(f"METRIC coverage_nonoverlap_bases={merged_bases}")
 PYMERGE
     rc=$?
     set -e
     cat "$bed_check" || true
     if (( rc != 0 )); then
-        fail_step "target_bed_invalid" "Target BED / BAM contig validation failed; see 05_coverage_qc/target_bed_check.txt"
+        fail_step "coverage_bed_invalid" "Coverage BED / BAM contig validation failed; see 05_coverage_qc/coverage_bed_check.txt"
         return 1
     fi
-    step_check_pass "target_bed" "target BED intervals are valid and its contigs exist in the BAM header"
+    step_check_pass "coverage_bed" "coverage BED intervals are valid and its contigs exist in the BAM header"
 
     local key value
     while IFS='=' read -r key value; do
@@ -3293,7 +3602,7 @@ PYEMIT
     fi
 
     step_output coverage_metrics "$coverage_json"
-    step_output merged_target_bed "$merged_bed"
+    step_output merged_coverage_bed "$merged_bed"
     add_artifact coverage_metrics "Coverage metrics" "$coverage_json" 1 0 \
         "Mean target depth and breadth at 1/10/20/30/50/100x"
     add_artifact coverage_regions "mosdepth regions" "$regions_gz" 1 0 "Per-target mean depth"
@@ -4233,6 +4542,19 @@ PYSUMMARY
         printf '- Assay: whole exome sequencing, paired-end Illumina, germline\n'
         printf '- Reference bundle: `%s` (assembly `%s`, contig style `%s`, as declared in the run config)\n' \
             "${BUNDLE_ID:-unnamed}" "$ASSEMBLY" "$CONTIG_STYLE"
+        printf '- Capture design: `%s` `%s` (version `%s`, design ID `%s`)\n' \
+            "$TARGET_BED_MANUFACTURER" "$TARGET_BED_CAPTURE_KIT_NAME" \
+            "$TARGET_BED_CAPTURE_KIT_VERSION" "$TARGET_BED_DESIGN_ID"
+        printf '- Capture-kit profile: `%s` (selection mode `%s`)\n' \
+            "$CAPTURE_KIT_ID" "$CAPTURE_KIT_MODE"
+        printf '- Target BED: `%s` (build `%s`, source `%s`, declared SHA-256 `%s`)\n' \
+            "$TARGET_BED_FILE_NAME" "$TARGET_BED_GENOME_BUILD" \
+            "$TARGET_BED_SOURCE" "$TARGET_BED_SHA256"
+        printf '- Coverage BED: `%s` (declared SHA-256 `%s`)\n' \
+            "$(basename -- "$COVERAGE_BED")" "$COVERAGE_BED_SHA256"
+        if [[ -n "$TARGET_BED_SOURCE_URL" ]]; then
+            printf '- Target BED source URL: %s\n' "$TARGET_BED_SOURCE_URL"
+        fi
         printf '- Core endpoint: raw VCF. **No variant filtering was applied to it.**\n\n'
         printf '## Steps executed\n\n'
         printf '| Step | Status | Seconds |\n|---|---|---|\n'
