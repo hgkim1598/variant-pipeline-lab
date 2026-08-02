@@ -45,14 +45,34 @@
 #   - breast-cancer 8-gene BED substituted for a WES target BED (1461-1479)
 #   - `conda install` (371, 1519), `git clone` + `pip install` + reference DB
 #     download (2213-2217) during analysis
-#   - mixed assemblies: b37 resources with `-b hg38` InterVar (2295)
+#   - mixed assemblies: resources from different reference builds were combined,
+#     and the reference build and the InterVar build were inconsistent (2295)
 #   - trim decision recorded as "none" while fastp actually ran (375 vs 1063)
 #   - shared `latest_v5` symlink (1386)
 #
-# Verification profile currently exercised (not a permanent restriction):
+# ENGINE SCOPE vs CURRENT PROFILE — these are two different things.
+#
+#   Engine: a config-driven germline WES orchestrator. No assembly, reference
+#   path, capture kit or resource location is hard-coded anywhere in this file.
+#   Every build-specific value arrives through resource_bundle in the run
+#   config, so another compatible bundle is adopted by editing config, not code.
+#   The engine does not restrict runs to one assembly; what it refuses is an
+#   UNDECLARED or STRUCTURALLY INCOMPATIBLE bundle (see normalize_config and
+#   validate_reference_bundle).
+#
+#   Current documented/default profile: GRCh38. The example bundle in
+#   docs/MAIN_SH_COMPLETE_GUIDE.md targets GRCh38, and the only assembly with an
+#   InterVar build mapping today is GRCh38 -> hg38. This is the recommended
+#   profile, not an engine limit.
+#
+# Analysis shape currently exercised (not a permanent restriction):
 #   paired-end Illumina germline WES, one biological sample per run, multiple
-#   lanes allowed, hs37d5 / GRCh37 / b37, Agilent SureSelect Human All Exon V5,
-#   known-sites of the same build, FASTQ through raw VCF.
+#   lanes allowed, a whole-exome target BED and known-sites belonging to the
+#   declared bundle, FASTQ through raw VCF.
+#
+# NOT YET VERIFIED: no run of this revision against real resources has been
+#   performed. `bash -n`, `--help` and code/doc consistency are static checks
+#   only; they say nothing about whether any particular bundle works.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -75,6 +95,36 @@ DEFAULT_MOSDEPTH_MAPQ=20
 DEFAULT_LOW_COVERAGE_DEPTH=20
 DEFAULT_MIN_RAM_GB=8
 DEFAULT_TRIM_MODE="skip"
+
+# ---------------------------------------------------------------------------
+# Reference-bundle vocabulary.
+#
+# This pipeline is a config-driven germline WES engine: it does NOT hard-code an
+# assembly, a reference path or a capture kit. Everything build-specific arrives
+# through resource_bundle in the run config. The two tables below are the only
+# build-related vocabulary the engine knows, and both are deliberately generic
+# and extensible.
+#
+#   VALID_CONTIG_STYLES
+#     Accepted values for resource_bundle.contig_style. This describes the
+#     CHROMOSOME NAMING CONVENTION only, never the assembly:
+#       plain | nochr | ensembl  ->  contigs are named 1, 2, ... MT
+#       chr   | ucsc             ->  contigs are named chr1, chr2, ... chrM
+#     Assembly or build names (GRCh38, hg38, ...) are rejected here on purpose;
+#     they belong in resource_bundle.assembly.
+#
+#   INTERVAR_BUILD_FOR_ASSEMBLY
+#     Optional-step mapping from a declared assembly to the build name the
+#     InterVar/ANNOVAR command line expects. It is consulted ONLY when the
+#     InterVar optional step runs, so an assembly missing from this table still
+#     works for the whole core pipeline. To adopt another assembly later, add a
+#     row here — no other code change is required.
+# ---------------------------------------------------------------------------
+VALID_CONTIG_STYLES=(plain nochr ensembl chr ucsc)
+
+declare -A INTERVAR_BUILD_FOR_ASSEMBLY=(
+    [grch38]=hg38
+)
 
 # ---------------------------------------------------------------------------
 # Step metadata — declared ONCE here and used by build_step_plan, resume,
@@ -354,6 +404,33 @@ normalize_path() {
 import os, sys
 print(os.path.realpath(os.path.abspath(os.path.expanduser(sys.argv[1]))))
 PYNORM
+}
+
+# trim_ws <value> -> value without leading/trailing whitespace.
+# A config value of "  " must not pass a plain -n test.
+trim_ws() {
+    local s=$1
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# is_placeholder <value> -> 0 when the value is an unreplaced template token.
+# Config templates ship with TODO_… markers so that a half-filled bundle fails
+# loudly instead of silently disabling a downstream check.
+is_placeholder() {
+    local v; v=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+    [[ "$v" == TODO* || "$v" == "<"*">" || "$v" == "CHANGEME"* ]]
+}
+
+# in_list <needle> <haystack...> -> 0 on exact match
+in_list() {
+    local needle=$1; shift
+    local item
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
 }
 
 # path_under <candidate> <root> -> 0 when candidate is inside (or equal to) root
@@ -966,6 +1043,35 @@ normalize_config() {
         *) die "trim_mode must be 'skip' or 'force' (got '$TRIM_MODE'). An automatic threshold mode is not implemented." ;;
     esac
 
+    # ---- resource_bundle contract ------------------------------------------
+    # The engine accepts any explicitly declared assembly; it does not restrict
+    # runs to one reference build. What it refuses is an UNDECLARED one: an
+    # empty value, a null, a whitespace-only value or an unresolved template
+    # placeholder. Those silently disable the assembly-dependent checks
+    # downstream, which is exactly the failure mode this contract exists to
+    # prevent.
+    ASSEMBLY=$(trim_ws "$ASSEMBLY")
+    CONTIG_STYLE=$(trim_ws "$CONTIG_STYLE")
+
+    [[ -n "$ASSEMBLY" ]] || die "resource_bundle.assembly is required and must name the reference assembly of this bundle (for example 'GRCh38'). It is recorded in provenance, reported in methods.md and used to check the InterVar build, so it is never inferred from a file name."
+    is_placeholder "$ASSEMBLY" \
+        && die "resource_bundle.assembly is still a template placeholder: '$ASSEMBLY'. Replace it with the assembly this bundle actually provides."
+
+    # contig_style is a chromosome NAMING CONVENTION, not an assembly name.
+    # Accepting an assembly name here is what previously let 'assembly' and
+    # 'contig style' blur into one field.
+    [[ -n "$CONTIG_STYLE" ]] || die "resource_bundle.contig_style is required. It declares the chromosome naming convention of the reference, not the assembly: use ${VALID_CONTIG_STYLES[*]} (plain/nochr/ensembl = contigs named '1', chr/ucsc = contigs named 'chr1'). The declared value is checked against the actual FASTA in preflight."
+    is_placeholder "$CONTIG_STYLE" \
+        && die "resource_bundle.contig_style is still a template placeholder: '$CONTIG_STYLE'. Inspect the first column of the reference .fai and declare one of: ${VALID_CONTIG_STYLES[*]}"
+    CONTIG_STYLE=$(printf '%s' "$CONTIG_STYLE" | tr '[:upper:]' '[:lower:]')
+    if ! in_list "$CONTIG_STYLE" "${VALID_CONTIG_STYLES[@]}"; then
+        die "resource_bundle.contig_style must be one of: ${VALID_CONTIG_STYLES[*]} (got '$CONTIG_STYLE').
+contig_style describes the chromosome naming convention only:
+  plain | nochr | ensembl   contigs are named 1, 2, ... MT
+  chr   | ucsc              contigs are named chr1, chr2, ... chrM
+An assembly or build name (GRCh38, hg38, ...) is not a contig style; declare that in resource_bundle.assembly instead."
+    fi
+
     RUN_DIR="$OUTPUT_ROOT/$RUN_ID"
     CONFIG_DIR="$RUN_DIR/config"
     STATUS_DIR="$RUN_DIR/status"
@@ -1464,20 +1570,35 @@ PYSHEET
 #   range validation with a non-overlapping base count.
 # [REMOVED] the `$HOME/sideprojects/` personal-area restriction and the
 #   project-specific subset-path guard: both blocked any other user or server.
-# [ADDED] a declared-contig-style consistency check so a b37 bundle cannot be
-#   paired with a chr-prefixed reference.
+# [ADDED] a declared-contig-style consistency check so a bundle declaring
+#   unprefixed contigs cannot be paired with a chr-prefixed reference, and vice
+#   versa. contig_style describes chromosome naming only; the assembly itself is
+#   recorded separately in resource_bundle.assembly.
+# [ADDED] dbsnp_vcf gets the same structural checks as known-sites when it is
+#   declared, because it is passed to GenotypeGVCFs in a core step.
+#
+# [WHAT THIS PROVES — AND WHAT IT DOES NOT]
+#   These checks establish STRUCTURAL COMPATIBILITY: the files agree on contig
+#   names, contig lengths and coordinate ranges, so the tools will not silently
+#   mis-map coordinates.
+#   They do NOT prove shared build provenance. Two files can agree on every
+#   contig name and length and still come from different releases or different
+#   patch levels of the same assembly. Provenance comes from the declared
+#   resource_bundle (assembly, bundle_id) and from how the operator obtained the
+#   files — never from these checks alone. Report wording must stay at
+#   "structurally compatible" and must not claim a verified build.
 # ---------------------------------------------------------------------------
 validate_reference_bundle() {
     local report="$RUN_DIR/00_input_validation/resource_validation.txt"
     local rc=0
 
     set +e
-    "$(resolve_python)" - "$REF_FASTA" "$TARGET_BED" "$CONTIG_STYLE" \
+    "$(resolve_python)" - "$REF_FASTA" "$TARGET_BED" "$CONTIG_STYLE" "$DBSNP_VCF" \
         ${KNOWN_SITES[@]+"${KNOWN_SITES[@]}"} > "$report" 2>&1 <<'PYBUNDLE'
-import os, subprocess, sys
+import os, re, subprocess, sys
 from collections import defaultdict
 
-ref, bed, contig_style, *known_sites = sys.argv[1:]
+ref, bed, contig_style, dbsnp, *known_sites = sys.argv[1:]
 errors, notes = [], []
 
 
@@ -1521,18 +1642,37 @@ if os.path.isfile(fai) and os.path.isfile(dict_path):
         notes.append(f"reference contigs: {len(fai_rows)}")
 
 ref_contigs = set()
+ref_lengths = {}
 if os.path.isfile(fai):
     with open(fai, encoding="utf-8") as fh:
-        ref_contigs = {line.split("\t")[0] for line in fh if line.strip()}
+        for line in fh:
+            if line.strip():
+                f = line.rstrip().split("\t")
+                ref_contigs.add(f[0])
+                ref_lengths[f[0]] = int(f[1])
+
+# contig_style is a chromosome NAMING CONVENTION, never an assembly name.
+# normalize_config() already restricted the value to this vocabulary; the
+# explicit else keeps the check exhaustive here too, so an unrecognised style
+# can never silently skip the comparison against the real FASTA.
+NOCHR_STYLES = ("plain", "nochr", "ensembl")
+CHR_STYLES = ("chr", "ucsc")
 
 if ref_contigs:
     chr_prefixed = sum(1 for c in ref_contigs if c.startswith("chr"))
     looks_chr = chr_prefixed > len(ref_contigs) / 2
     style = (contig_style or "").lower()
-    if style in ("b37", "ensembl", "plain", "grch37", "nochr") and looks_chr:
-        errors.append(f"contig_style='{contig_style}' declares no 'chr' prefix but the reference uses 'chr'")
-    if style in ("ucsc", "chr", "hg19", "hg38") and not looks_chr:
-        errors.append(f"contig_style='{contig_style}' declares a 'chr' prefix but the reference does not use it")
+    if style in NOCHR_STYLES:
+        if looks_chr:
+            errors.append(f"contig_style='{contig_style}' declares no 'chr' prefix but the reference uses 'chr'")
+    elif style in CHR_STYLES:
+        if not looks_chr:
+            errors.append(f"contig_style='{contig_style}' declares a 'chr' prefix but the reference does not use it")
+    else:
+        errors.append(
+            f"contig_style='{contig_style}' is not a recognised chromosome naming convention; "
+            f"expected one of {', '.join(NOCHR_STYLES + CHR_STYLES)}. "
+            "An assembly or build name is not a contig style.")
     notes.append(f"contig style: declared='{contig_style}', chr-prefixed={chr_prefixed}/{len(ref_contigs)}")
 
 bed_rows = bed_merged_rows = bed_raw_bases = bed_merged_bases = 0
@@ -1580,28 +1720,81 @@ if bed_ok and ref_contigs:
     except ValueError as exc:
         errors.append(str(exc))
 
-if not known_sites:
-    errors.append("known_sites is empty; BQSR is a core step and requires known sites")
-for vcf in known_sites:
-    if not need(vcf, "known_sites entry"):
-        continue
+CONTIG_LEN_RE = re.compile(r"##contig=<([^>]*)>")
+
+
+def check_vcf_resource(vcf, label):
+    """Structural checks shared by every indexed VCF resource in the bundle.
+
+    Verifies: file present and non-empty, tabix/CSI index present, header
+    parses, indexed contigs are a subset of the reference, and any contig
+    lengths declared in the header agree with the reference .fai.
+
+    This establishes structural compatibility only. It cannot establish that
+    the file was built from the same assembly release as the reference; that
+    remains a property of the declared resource_bundle.
+    """
+    errors_before = len(errors)
+    if not need(vcf, label):
+        return
     if not (os.path.isfile(vcf + ".tbi") or os.path.isfile(vcf + ".csi")):
-        errors.append(f"known_sites index missing (.tbi or .csi): {vcf}"); continue
+        errors.append(f"{label} index missing (.tbi or .csi): {vcf}"); return
     try:
         p = subprocess.run(["bcftools", "view", "-h", vcf], capture_output=True, text=True, timeout=180)
         if p.returncode != 0:
-            errors.append(f"cannot parse VCF header: {vcf}"); continue
+            errors.append(f"cannot parse VCF header: {vcf}"); return
+        header = p.stdout
     except (OSError, subprocess.SubprocessError) as exc:
-        errors.append(f"bcftools unavailable for {vcf}: {exc}"); continue
+        errors.append(f"bcftools unavailable for {vcf}: {exc}"); return
+
+    # Header-declared contig lengths, when present, are a cheap and decisive
+    # way to catch a resource built against a different assembly.
+    mismatched = []
+    for line in header.splitlines():
+        m = CONTIG_LEN_RE.match(line.strip())
+        if not m:
+            continue
+        fields = dict(kv.split("=", 1) for kv in m.group(1).split(",") if "=" in kv)
+        name, ln = fields.get("ID"), fields.get("length")
+        if not name or not ln or name not in ref_lengths:
+            continue
+        try:
+            ln = int(ln)
+        except ValueError:
+            continue
+        if ln != ref_lengths[name]:
+            mismatched.append(f"{name}: header={ln} reference={ref_lengths[name]}")
+    if mismatched:
+        errors.append(f"{label} declares contig lengths that differ from the reference: "
+                      f"{vcf}: {mismatched[:5]}")
+
     try:
         p = subprocess.run(["tabix", "-l", vcf], capture_output=True, text=True, timeout=180)
         if p.returncode != 0:
-            errors.append(f"cannot read tabix contig list: {vcf}"); continue
-        unknown = sorted({x for x in p.stdout.splitlines() if x} - ref_contigs)
+            errors.append(f"cannot read tabix contig list: {vcf}"); return
+        listed = {x for x in p.stdout.splitlines() if x}
+        unknown = sorted(listed - ref_contigs)
         if ref_contigs and unknown:
-            errors.append(f"known-sites contigs absent from the reference: {vcf}: {unknown[:10]}")
+            errors.append(f"{label} contigs absent from the reference: {vcf}: {unknown[:10]}")
+        elif listed and len(errors) == errors_before:
+            notes.append(f"{label} structurally compatible: {os.path.basename(vcf)} "
+                         f"({len(listed)} indexed contigs)")
     except (OSError, subprocess.SubprocessError) as exc:
         errors.append(f"tabix unavailable for {vcf}: {exc}")
+
+
+if not known_sites:
+    errors.append("known_sites is empty; BQSR is a core step and requires known sites")
+for vcf in known_sites:
+    check_vcf_resource(vcf, "known_sites entry")
+
+# dbsnp_vcf is optional, but once declared it is handed to GenotypeGVCFs in a
+# CORE step. A declared-but-broken dbSNP must therefore fail here rather than
+# surface mid-run. Leaving it unset stays a warning at variant-calling time.
+if dbsnp:
+    check_vcf_resource(dbsnp, "dbsnp_vcf")
+else:
+    notes.append("dbsnp_vcf: not declared (rsIDs will not be added; variants are unaffected)")
 
 for n in notes:
     print(f"[NOTE] {n}")
@@ -1610,7 +1803,10 @@ if errors:
     for e in errors:
         print(f"  - {e}")
     sys.exit(2)
-print("[OK] Resource bundle is internally consistent.")
+print("[OK] Resource bundle is structurally compatible "
+      "(contig names, lengths and coordinate ranges agree).")
+print("[NOTE] Structural compatibility is not proof of shared build provenance; "
+      "that is asserted by the declared resource_bundle, not by these checks.")
 print(f"METRIC target_rows={bed_rows}")
 print(f"METRIC target_merged_rows={bed_merged_rows}")
 print(f"METRIC target_merged_bases={bed_merged_bases}")
@@ -1623,20 +1819,24 @@ PYBUNDLE
         step_check_fail "resource_bundle" "validation failed; see 00_input_validation/resource_validation.txt"
         return 1
     fi
-    step_check_pass "resource_bundle" "reference, indexes, target BED and known-sites are consistent (assembly=${ASSEMBLY:-unset})"
+    # Wording is deliberate: the checks above compare contig names, contig
+    # lengths and coordinate ranges. They do not establish that every file came
+    # from the same assembly release, so this must not read as "build verified".
+    step_check_pass "resource_bundle" "reference, indexes, target BED, known-sites and dbSNP are structurally compatible (declared assembly=${ASSEMBLY}, contig_style=${CONTIG_STYLE}); build provenance is asserted by the bundle, not proven here"
 
     local key value
     while IFS='=' read -r key value; do
         [[ -n "$key" ]] && step_metric "$key" "$value" num
     done < <(grep '^METRIC ' "$report" | sed 's/^METRIC //')
 
-    step_metric assembly "${ASSEMBLY:-unset}" str
-    step_metric contig_style "${CONTIG_STYLE:-unset}" str
+    step_metric assembly "$ASSEMBLY" str
+    step_metric contig_style "$CONTIG_STYLE" str
     step_metric bundle_id "${BUNDLE_ID:-unset}" str
     step_input reference_fasta "$REF_FASTA"
     step_input target_bed "$TARGET_BED"
     local ks
     for ks in ${KNOWN_SITES[@]+"${KNOWN_SITES[@]}"}; do step_input known_sites "$ks"; done
+    if [[ -n "$DBSNP_VCF" ]]; then step_input dbsnp_vcf "$DBSNP_VCF"; fi
 
     # Resource checksums (reused from the Processing source section 5).
     : > "$RESOURCE_SHA256"
@@ -1648,6 +1848,109 @@ PYBUNDLE
         "sha256 of reference, target BED and known-sites"
     add_artifact validation_report "Resource validation report" "$report" 1 0 "Resource bundle preflight output"
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# check_vcf_against_reference <vcf> [label]
+#
+# Structural compatibility check for an OPTIONAL annotation VCF, applying the
+# same rules validate_reference_bundle() applies to known-sites and dbSNP:
+# file present, index present, header parses, contig naming convention matches
+# the reference, indexed contigs are a subset of the reference, and any
+# header-declared contig lengths agree with the reference .fai.
+#
+# Returns 0 when structurally compatible, non-zero otherwise, and prints a
+# one-line reason on failure. Callers in optional steps turn a non-zero result
+# into a skip + warning so that core results are never affected.
+#
+# [SCOPE] Like the preflight checks, this proves coordinate-structure
+# compatibility only. It does not prove that the resource was built from the
+# same assembly release as the reference. The resource_bundle contract — every
+# resource in the bundle belongs to the declared assembly — is what asserts
+# that, and the exact release belongs in the bundle's own provenance.
+# ---------------------------------------------------------------------------
+check_vcf_against_reference() {
+    local vcf=$1 label=${2:-resource}
+    "$(resolve_python)" - "$vcf" "$REF_FASTA" "$CONTIG_STYLE" "$label" <<'PYVCFCOMPAT'
+import os, re, subprocess, sys
+
+vcf, ref, contig_style, label = sys.argv[1:5]
+
+
+def fail(msg):
+    print(f"{label}: {msg}")
+    sys.exit(1)
+
+
+if not vcf or not os.path.isfile(vcf) or os.path.getsize(vcf) == 0:
+    fail(f"missing or empty: {vcf}")
+if not (os.path.isfile(vcf + ".tbi") or os.path.isfile(vcf + ".csi")):
+    fail(f"index missing (.tbi or .csi): {vcf}")
+
+fai = ref + ".fai"
+ref_lengths = {}
+if os.path.isfile(fai):
+    with open(fai, encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                f = line.rstrip().split("\t")
+                ref_lengths[f[0]] = int(f[1])
+if not ref_lengths:
+    fail(f"cannot read reference index: {fai}")
+
+try:
+    p = subprocess.run(["bcftools", "view", "-h", vcf], capture_output=True, text=True, timeout=180)
+    if p.returncode != 0:
+        fail(f"cannot parse VCF header: {vcf}")
+    header = p.stdout
+except (OSError, subprocess.SubprocessError) as exc:
+    fail(f"bcftools unavailable: {exc}")
+
+hdr_contigs, mismatched = [], []
+for line in header.splitlines():
+    m = re.match(r"##contig=<([^>]*)>", line.strip())
+    if not m:
+        continue
+    fields = dict(kv.split("=", 1) for kv in m.group(1).split(",") if "=" in kv)
+    name = fields.get("ID")
+    if not name:
+        continue
+    hdr_contigs.append(name)
+    ln = fields.get("length")
+    if ln and name in ref_lengths:
+        try:
+            if int(ln) != ref_lengths[name]:
+                mismatched.append(f"{name}(header={ln},ref={ref_lengths[name]})")
+        except ValueError:
+            pass
+if mismatched:
+    fail(f"contig lengths differ from the reference: {mismatched[:5]}")
+
+# Naming convention: compare against the reference rather than assuming a
+# convention from the assembly name.
+ref_chr = sum(1 for c in ref_lengths if c.startswith("chr")) > len(ref_lengths) / 2
+if hdr_contigs:
+    vcf_chr = sum(1 for c in hdr_contigs if c.startswith("chr")) > len(hdr_contigs) / 2
+    if vcf_chr != ref_chr:
+        fail("chromosome naming convention differs from the reference "
+             f"(reference uses {'chr-prefixed' if ref_chr else 'unprefixed'} names, "
+             f"this file uses {'chr-prefixed' if vcf_chr else 'unprefixed'} names)")
+
+try:
+    p = subprocess.run(["tabix", "-l", vcf], capture_output=True, text=True, timeout=180)
+    if p.returncode != 0:
+        fail(f"cannot read tabix contig list: {vcf}")
+    listed = {x for x in p.stdout.splitlines() if x}
+except (OSError, subprocess.SubprocessError) as exc:
+    fail(f"tabix unavailable: {exc}")
+
+unknown = sorted(listed - set(ref_lengths))
+if unknown:
+    fail(f"contigs absent from the reference: {unknown[:10]}")
+
+print(f"{label}: structurally compatible with the reference "
+      f"({len(listed)} indexed contigs; build provenance not proven by this check)")
+PYVCFCOMPAT
 }
 
 # ---------------------------------------------------------------------------
@@ -3013,8 +3316,9 @@ PYEMIT
 #   over the same intervals; VCF header parse validation; index readability;
 #   VCF sample-column identity against the read-group SM; non-zero record
 #   count; REF-allele agreement via `bcftools norm -c e`; `bcftools stats`.
-# [INTERFACE] The hard-coded "all REF alleles match hs37d5" message now names
-#   the assembly declared in the bundle, so another bundle needs no code change.
+# [INTERFACE] The message that used to name one hard-coded reference in "all REF
+#   alleles match <reference>" now names the assembly declared in the bundle, so
+#   another bundle needs no code change.
 # [SCOPE] raw VCF is the core completion point. Hard filtering is deliberately
 #   not performed here; see run_filtering and the preservation document.
 # ---------------------------------------------------------------------------
@@ -3380,16 +3684,26 @@ run_annotation() {
             "ClinVar annotation is skipped" "true"
     else
         step_input clinvar_vcf "$CLINVAR_VCF"
-        # Build compatibility must be verified before annotating: joining a
-        # b37 callset to a GRCh38 ClinVar would produce silently wrong results.
-        local in_style cv_style
-        in_style=$(bcftools view -h "$normalized" 2>/dev/null | grep -m1 -c '^##contig=<ID=chr' || true)
-        cv_style=$(bcftools view -h "$CLINVAR_VCF" 2>/dev/null | grep -m1 -c '^##contig=<ID=chr' || true)
-        if [[ "$in_style" != "$cv_style" ]]; then
-            step_warning "CLINVAR_CONTIG_STYLE_MISMATCH" \
-                "The callset and the ClinVar VCF use different chromosome naming conventions" \
-                "ClinVar annotation is skipped to avoid producing silently wrong matches" "true"
+        # Structural compatibility must be established before annotating:
+        # annotating a callset from one reference build with a ClinVar release
+        # from another produces silently wrong clinical interpretations.
+        #
+        # A chromosome-naming comparison alone is NOT full build verification —
+        # two releases can share every contig name and still disagree. What is
+        # checked here is structure: index presence, header parse, contig
+        # subset, header-declared contig lengths against the reference .fai, and
+        # naming convention. The guarantee that ClinVar belongs to the declared
+        # assembly comes from the resource_bundle contract (every resource in
+        # the bundle is of resource_bundle.assembly), and the exact release must
+        # be recorded in the run config / bundle provenance.
+        local clinvar_compat="" clinvar_compat_rc=0
+        clinvar_compat=$(check_vcf_against_reference "$CLINVAR_VCF" "clinvar_vcf") || clinvar_compat_rc=$?
+        if (( clinvar_compat_rc != 0 )); then
+            step_warning "CLINVAR_INCOMPATIBLE" \
+                "ClinVar VCF is not structurally compatible with the reference — ${clinvar_compat:-no detail reported}" \
+                "ClinVar annotation is skipped to avoid producing silently wrong matches; the normalised VCF and the core raw VCF are unaffected" "true"
         else
+            log "$clinvar_compat"
             local clinvar_out="$stage_dir/${SAMPLE_ID}.clinvar.vcf.gz"
             local clinvar_part="${clinvar_out}.part"
             rm -f -- "$clinvar_part"
@@ -3455,10 +3769,11 @@ run_annotation() {
 # [REMOVED confirmed errors]
 #   - `git clone https://github.com/WGLab/InterVar.git` at run time (line 2213)
 #   - `pip install -r requirements.txt --break-system-packages` (line 2215)
-#   - `python InterVar.py --download_db -d humandb/ -b hg38` (line 2217), which
+#   - `python InterVar.py --download_db -d humandb/` (line 2217), which
 #     downloads tens of gigabytes during an analysis run
-#   - the `-b hg38` build hard-coding (line 2295), which contradicted the b37
-#     resources used by the rest of the pipeline
+#   - the hard-coded `-b` build value (line 2295), which was not derived from the
+#     run config and could contradict the reference build of the resources used
+#     by the rest of the pipeline. The build now comes from `intervar.build`.
 #   - `find ... | head -1` discovery of the input VCF (line 2192)
 # InterVar and its databases must be installed beforehand; see
 # docs/MAIN_SH_COMPLETE_GUIDE.md — "18. Optional InterVar", and the setup
@@ -3486,9 +3801,38 @@ run_intervar() {
     fi
     if [[ -z "$intervar_build" ]]; then
         fail_step "intervar_build_not_set" \
-            "intervar.build is not set. The build must match the resource bundle (assembly=${ASSEMBLY:-unset}); it is never assumed."
+            "intervar.build is not set. The build must match the resource bundle (assembly=${ASSEMBLY}); it is never assumed."
         return 1
     fi
+
+    # ---- assembly <-> InterVar build correspondence -------------------------
+    # Checked HERE, inside the optional step, and never during core preflight:
+    # an assembly that has no InterVar mapping yet must still be able to run the
+    # whole core pipeline. Extend INTERVAR_BUILD_FOR_ASSEMBLY (section 0) to
+    # adopt another assembly; no other code changes are needed.
+    local assembly_key expected_build=""
+    assembly_key=$(printf '%s' "$ASSEMBLY" | tr '[:upper:]' '[:lower:]')
+    if [[ -n "${INTERVAR_BUILD_FOR_ASSEMBLY[$assembly_key]+set}" ]]; then
+        expected_build="${INTERVAR_BUILD_FOR_ASSEMBLY[$assembly_key]}"
+    fi
+
+    local known_map="" k
+    for k in "${!INTERVAR_BUILD_FOR_ASSEMBLY[@]}"; do
+        known_map+="${known_map:+, }${k} -> ${INTERVAR_BUILD_FOR_ASSEMBLY[$k]}"
+    done
+
+    if [[ -z "$expected_build" ]]; then
+        fail_step "intervar_assembly_unmapped" \
+            "Optional InterVar step configuration problem — the CORE pipeline and the raw VCF are unaffected. The resource bundle declares assembly='${ASSEMBLY}', which has no InterVar/ANNOVAR build mapping in this script. Configured intervar.build='${intervar_build}'. Known mappings: ${known_map:-<none>}. Add the assembly to INTERVAR_BUILD_FOR_ASSEMBLY in script/main.sh once the matching ANNOVAR humandb is prepared, or turn optional_steps.intervar off."
+        return 1
+    fi
+    if [[ "$intervar_build" != "$expected_build" ]]; then
+        fail_step "intervar_build_mismatch" \
+            "Optional InterVar step configuration problem — the CORE pipeline and the raw VCF are unaffected. resource_bundle.assembly='${ASSEMBLY}' expects intervar.build='${expected_build}', but the config sets intervar.build='${intervar_build}'. Annotating with a mismatched build produces coordinates that are silently wrong. Fix intervar.build, or correct the assembly if the bundle is not what you intended."
+        return 1
+    fi
+    step_check_pass "intervar_build_matches_assembly" \
+        "intervar.build='${intervar_build}' matches the declared assembly '${ASSEMBLY}'"
     if [[ -z "$humandb" || ! -d "$humandb" ]]; then
         fail_step "intervar_humandb_missing" \
             "intervar.humandb_dir is not set or does not exist. The annotation databases must be prepared beforehand."
@@ -3887,8 +4231,8 @@ PYSUMMARY
         printf '- Pipeline: %s %s\n' "$PIPELINE_NAME" "$PIPELINE_VERSION"
         printf '- Sample: `%s`\n' "${SAMPLE_ID:-unknown}"
         printf '- Assay: whole exome sequencing, paired-end Illumina, germline\n'
-        printf '- Reference bundle: `%s` (assembly `%s`, contig style `%s`)\n' \
-            "${BUNDLE_ID:-unnamed}" "${ASSEMBLY:-unset}" "${CONTIG_STYLE:-unset}"
+        printf '- Reference bundle: `%s` (assembly `%s`, contig style `%s`, as declared in the run config)\n' \
+            "${BUNDLE_ID:-unnamed}" "$ASSEMBLY" "$CONTIG_STYLE"
         printf '- Core endpoint: raw VCF. **No variant filtering was applied to it.**\n\n'
         printf '## Steps executed\n\n'
         printf '| Step | Status | Seconds |\n|---|---|---|\n'
@@ -3912,6 +4256,7 @@ PYSUMMARY
         printf -- '- The raw VCF is unfiltered. Variant-level and genotype-level filtering are separate, optional steps.\n'
         printf -- '- Coverage metrics are reported without a pass/fail verdict based on mean depth alone.\n'
         printf -- '- No benchmark against a truth set was performed in this run.\n'
+        printf -- '- Reference resources were checked for structural compatibility (contig names, contig lengths, coordinate ranges). That is not proof of shared build provenance: the assembly above is the one declared in the run config, and the exact release of each resource is the operator'"'"'s record, not a pipeline measurement.\n'
     } > "${out}.part"
     mv -f -- "${out}.part" "$out"
 }

@@ -8,7 +8,27 @@
 > 따라서 실제 도구 버전, index 파일명 생성 방식, 서버 자원 사용량,
 > 전체 파이프라인의 실제 완주 여부는 Linux smoke test에서 최종 확인해야 합니다.
 
+## 엔진과 profile은 다릅니다
+
+이 문서를 읽을 때 두 가지를 반드시 구분하세요.
+
+| 구분 | 내용 |
+|---|---|
+| **pipeline engine** (`main.sh`) | **config-driven 범용 germline WES 엔진**입니다. assembly, reference 경로, capture kit, 사람 이름, 서버 경로 중 **어느 것도 코드에 하드코딩되어 있지 않습니다.** 다른 호환 bundle은 **코드가 아니라 config를 바꿔서** 쓸 수 있습니다 |
+| **current recommended profile** | **GRCh38**입니다. 이 문서의 config 예시가 GRCh38 기준이고, InterVar build 매핑도 현재는 `GRCh38 -> hg38` 하나만 등록되어 있습니다. 이는 **권장 profile이지 엔진의 제약이 아닙니다** |
+
+엔진은 특정 assembly만 허용하지 않습니다.
+대신 **선언되지 않았거나 구조적으로 호환되지 않는 bundle**을 preflight에서 막습니다.
+
 ## 현재 검증 상태
+
+검증에는 세 단계가 있고, 지금은 1단계까지만 끝났습니다.
+
+| 단계 | 무엇을 확인하는가 | 상태 |
+|---|---|---|
+| **1. static validation** | `bash -n`, `--help`, 코드↔문서 정합성, 코드 정적 검토 | **완료** |
+| **2. resource validation** (`--check-only`) | 선언한 bundle의 파일이 실제로 존재하고 구조적으로 호환되는가 | **미완료** — 실제 config와 resource가 아직 없음 |
+| **3. execution validation** | subset/full WES를 실제 도구로 완주하는가 | **미완료** |
 
 | 검증 항목 | 상태 |
 |---|---|
@@ -17,10 +37,16 @@
 | mock/fixture 검증 | 완료 |
 | 코드 BLOCKER | 0건 |
 | 코드 HIGH | 0건 |
+| **GRCh38 profile `--check-only`** | **미완료** |
 | Linux 실제 실행 | **미완료** |
 | subset smoke test | **미완료** |
 | full WES 실행 | **미완료** |
 | optional 단계 실제 실행 | **미완료** |
+
+> [!WARNING]
+> 따라서 이 문서 어디에서도 **"GRCh38 profile이 검증되었다"고 말하지 않습니다.**
+> GRCh38은 **현재 문서화된 권장 profile**일 뿐이고,
+> 실제 resource로 `--check-only`나 실행을 마친 상태가 아닙니다.
 
 "코드에 결함이 발견되지 않았다"와 "실행이 성공한다"는 서로 다른 명제입니다.
 이 문서의 모든 설명은 **코드를 읽어서 확인한 사실**이며,
@@ -140,27 +166,35 @@ WES, read, FASTQ, BAM, VCF 같은 용어는 처음 나올 때 설명하고,
 | **SNV** (Single Nucleotide Variant) | 한 글자만 바뀐 변이. 예: `A` → `G`. |
 | **short Indel** | 짧은 삽입(insertion) 또는 결실(deletion). 예: `AT` → `A`. |
 
-### 2.3 현재 검증 대상 profile
+### 2.3 현재 권장 profile
 
 | 항목 | 현재 값 |
 |---|---|
 | 분석 종류 | germline WES, paired-end Illumina |
 | 한 run당 biological sample 수 | **1개** (같은 sample의 여러 lane은 허용) |
 | 찾는 변이 | SNV, short Indel |
-| reference genome | hs37d5 / GRCh37 / b37 |
-| capture kit | Agilent SureSelect Human All Exon V5 |
-| known-sites | 위 reference와 같은 build |
+| reference genome | **GRCh38** — 현재 문서화된 권장값. 구체적인 FASTA release는 config의 `resource_bundle`에서 선언 |
+| capture kit / target BED | 선언한 bundle과 좌표계가 일치하는 whole-exome target BED (config에서 선언) |
+| known-sites | 선언한 bundle과 같은 build |
+| InterVar build (optional) | `hg38` — `GRCh38 -> hg38` 매핑에 따름 |
 | 핵심 완료 지점 | **raw VCF** |
 
 > [!NOTE]
+> **이 표는 권장 profile이지 엔진의 제약이 아닙니다.**
+>
 > 이 값들은 **코드에 하드코딩되어 있지 않습니다.**
-> `hs37d5`라는 문자열은 `main.sh`의 제어 흐름 어디에도 등장하지 않습니다.
+> 특정 reference FASTA 파일 이름은 `main.sh`의 제어 흐름 어디에도 등장하지 않습니다.
 > 전부 실행 설정(config)의 `resource_bundle`에서 옵니다.
 > 다른 reference나 다른 capture kit를 쓰려면 **config만 바꾸면 되고 코드는 그대로**입니다.
 > 자세한 내용은 [4장](#4-입력-파일과-reference-resource)을 보세요.
 >
-> 위 표는 **"지금까지 이 조합으로 검증을 진행해 왔다"는 사실 선언**이지,
-> "이 조합만 쓸 수 있다"는 영구 제약이 아닙니다.
+> 유일한 예외는 optional InterVar 단계입니다.
+> 이 단계는 assembly와 도구 build 이름의 매핑표가 필요해서
+> `main.sh`의 `INTERVAR_BUILD_FOR_ASSEMBLY`에 한 줄을 추가해야 합니다
+> ([18.3](#183-사전-설치가-필수인-이유) 참고). **core 파이프라인은 영향받지 않습니다.**
+>
+> 또한 위 표는 **"이 조합으로 실행 검증을 마쳤다"는 뜻이 아닙니다.**
+> 실제 resource로 `--check-only`나 실행을 한 적은 아직 없습니다.
 
 ### 2.4 현재 범위 밖
 
@@ -301,17 +335,38 @@ paired-end이므로 **R1과 R2 두 파일이 한 쌍**이며, 같은 순번의 r
 > 그 영역 목록이 target BED입니다.
 > **kit마다 잡는 영역이 다르므로 kit이 바뀌면 BED도 반드시 바꿔야 합니다.**
 
-### 4.3 첫 검증 profile은 하드코딩이 아니다
+### 4.3 권장 profile은 하드코딩이 아니다
 
-현재 검증 중인 조합은 `hs37d5 / GRCh37 / b37` + `Agilent SureSelect Human All Exon V5`입니다.
+현재 권장 조합은 **GRCh38 resource bundle** + 그 bundle과 좌표계가 일치하는
+whole-exome target BED입니다.
 
 이것이 **설정이지 코드가 아니라는 근거**:
 
 - reference FASTA, `.fai`/`.dict`/BWA index, target BED, known-sites 목록,
   선택 resource가 전부 config의 `resource_bundle`에서 옵니다.
 - `assembly`와 `contig_style`은 **추정하지 않고 실제 reference와 대조 검증**합니다.
-  `b37`이라고 선언했는데 reference가 `chr` 접두사를 쓰면 preflight에서 거부합니다.
+  `plain`(접두사 없음)이라고 선언했는데 reference가 `chr` 접두사를 쓰면
+  preflight에서 거부합니다. 반대의 경우도 마찬가지입니다.
 - 어떤 함수도 reference 경로, sample 이름, assembly 이름을 제어 흐름에 담고 있지 않습니다.
+- **`assembly` 값을 특정 문자열로 제한하는 검사는 없습니다.** `GRCh38`이 아니면
+  실패하는 코드는 존재하지 않습니다. 엔진이 막는 것은 "GRCh38이 아닌 값"이 아니라
+  **"선언되지 않은 값"**입니다 — 빈 문자열, `null`, 공백뿐인 값,
+  `TODO_...` 같은 미치환 placeholder.
+
+**왜 assembly를 필수로 막는가**
+
+선언하지 않아도 core 분석은 돌아갑니다. 그런데 값이 비어 있으면
+provenance와 `methods.md`에 좌표계가 기록되지 않고,
+InterVar build 대조 검사도 무력화됩니다.
+즉 **조용히 검사가 꺼지는 것**이 문제라서 필수로 만들었습니다.
+
+**다른 assembly로 바꾸려면**
+
+| 대상 | 필요한 작업 |
+|---|---|
+| core 전체 (QC ~ raw VCF) | **config의 `resource_bundle`만 교체.** 코드 수정 없음 |
+| optional filtering / annotation | 동일. 코드 수정 없음 |
+| optional InterVar | `main.sh`의 `INTERVAR_BUILD_FOR_ASSEMBLY`에 `[<assembly 소문자>]=<도구 build 이름>` 한 줄 추가 |
 
 ### 4.4 build가 안 맞으면 왜 위험한가
 
@@ -319,7 +374,7 @@ paired-end이므로 **R1과 R2 두 파일이 한 쌍**이며, 같은 순번의 r
 
 | Mismatch | 무슨 일이 일어나나 | 비유 |
 |---|---|---|
-| **b37 reference + hg38 known-sites** | BQSR이 엉뚱한 위치를 "알려진 변이"로 취급 → 품질 보정이 왜곡됨 | 새 지도에 옛 주소록을 겹쳐 놓는 것 |
+| **reference FASTA와 다른 build의 known-sites** | BQSR이 엉뚱한 위치를 "알려진 변이"로 취급 → 품질 보정이 왜곡됨 | 새 지도에 옛 주소록을 겹쳐 놓는 것 |
 | **`1` contig + `chr1` BED** | 이름이 안 맞아 target을 하나도 못 찾음 → coverage가 0으로 보고됨 | "서울시"와 "Seoul"을 다른 곳으로 인식 |
 | **다른 capture kit BED** | 실제로 읽지 않은 영역을 "커버리지 부족"으로 보고 | 다른 회사 지도로 길을 찾는 것 |
 | **reference와 안 맞는 truth set** | benchmark 수치가 통째로 무의미해짐 | 다른 시험지의 정답지로 채점 |
@@ -333,9 +388,36 @@ paired-end이므로 **R1과 R2 두 파일이 한 쌍**이며, 같은 순번의 r
 - target BED의 모든 contig가 reference에 존재하는가
 - target BED 좌표가 음수가 아니고 contig 길이를 벗어나지 않는가
 - known-sites의 인덱스가 있고, 헤더가 파싱되며, 모든 contig가 reference에 존재하는가
+- known-sites 헤더에 contig 길이가 적혀 있으면 reference `.fai`의 길이와 같은가
+- `dbsnp_vcf`를 선언했다면 위와 **똑같은 검사**를 통과하는가
 
-annotation 단계는 여기에 더해 **callset과 ClinVar VCF의 contig 명명 규칙이 같은지**를
-주석 붙이기 직전에 한 번 더 확인하고, 다르면 주석을 건너뜁니다.
+annotation 단계는 여기에 더해 ClinVar VCF에 대해
+**index 존재, 헤더 파싱, contig subset, 헤더의 contig 길이, 명명 규칙**을
+주석 붙이기 직전에 확인하고, 하나라도 어긋나면 주석을 건너뜁니다.
+
+#### 이 검사가 증명하는 것과 증명하지 못하는 것
+
+> [!IMPORTANT]
+> 위 검사는 **구조적 호환성(structural compatibility)** 을 확인합니다.
+> **같은 build에서 왔다는 출처(build provenance)를 증명하지는 못합니다.**
+
+| 검사가 보장하는 것 | 검사가 보장하지 못하는 것 |
+|---|---|
+| contig 이름이 서로 맞는다 | 같은 assembly **release**에서 왔다 |
+| contig 길이가 서로 맞는다 | 같은 patch level이다 |
+| 좌표가 contig 범위 안에 있다 | 같은 공식 bundle에서 배포되었다 |
+| 도구가 좌표를 잘못 매핑하지 않는다 | 파일이 중간에 수정되지 않았다 |
+
+같은 assembly의 서로 다른 release는 주요 염색체의 이름과 길이가 **동일할 수 있습니다.**
+그래서 구조 검사만으로는 구분되지 않습니다.
+
+출처는 **`resource_bundle` 계약**이 담당합니다 —
+`resource_bundle` 안의 모든 resource는 선언한 `assembly`의 것이어야 하며,
+정확한 release는 config나 bundle provenance에 사람이 기록해야 합니다.
+
+따라서 코드와 문서는 이 검사 결과를
+`structurally compatible`이라고만 표현하고,
+`build verified`나 `same build confirmed`라고 쓰지 않습니다.
 
 ---
 
@@ -756,7 +838,7 @@ conda activate wes
 git clone https://github.com/WGLab/InterVar.git /opt/InterVar
 cd /opt/InterVar && pip install -r requirements.txt
 # ANNOVAR humandb는 자체 라이선스 조건에 따라 별도로 준비합니다.
-# build는 resource bundle에 맞춰 고르세요. hg38이라고 가정하지 마세요.
+# build는 resource bundle에 맞춰 고르세요. 현재 기준(GRCh38)에서는 hg38입니다.
 ```
 
 reference resource(FASTA, `.fai`, `.dict`, BWA index, target BED, known-sites와 인덱스)는
@@ -796,17 +878,16 @@ bundle 단위로 **한 번 준비**해 두고, run 중에는 읽기 전용으로
   "resume_strict_checksums": false,
 
   "resource_bundle": {
-    "bundle_id": "hs37d5_agilent_v5_b37",
-    "assembly": "GRCh37",
-    "contig_style": "b37",
-    "reference_fasta": "/data/ref/b37/hs37d5.fa",
-    "target_bed": "/data/ref/b37/agilent_v5_targets.b37.bed",
+    "bundle_id": "grch38_wes",
+    "assembly": "GRCh38",
+    "contig_style": "chr",
+    "reference_fasta": "TODO_GRCH38_REFERENCE_FASTA",
+    "target_bed": "TODO_GRCH38_TARGET_BED",
     "known_sites": [
-      "/data/ref/b37/dbsnp_138.b37.vcf.gz",
-      "/data/ref/b37/Mills_and_1000G_gold_standard.indels.b37.vcf.gz",
-      "/data/ref/b37/1000G_phase1.indels.b37.vcf.gz"
+      "TODO_GRCH38_KNOWN_SITE_1",
+      "TODO_GRCH38_KNOWN_SITE_2"
     ],
-    "dbsnp_vcf": "/data/ref/b37/dbsnp_138.b37.vcf.gz",
+    "dbsnp_vcf": "TODO_GRCH38_DBSNP_VCF",
     "clinvar_vcf": null,
     "vep_cache": null,
     "truth_vcf": null,
@@ -820,6 +901,44 @@ bundle 단위로 **한 번 준비**해 두고, run 중에는 읽기 전용으로
   }
 }
 ```
+
+> [!IMPORTANT]
+> **이 예시는 그대로 실행되지 않습니다.**
+> 이 저장소에는 GRCh38 resource 파일이 포함되어 있지 않고 확정된 경로도 없어서,
+> 가짜 경로를 지어내는 대신 `TODO_GRCH38_*` placeholder를 두었습니다.
+> 실행 전에 각 항목을 **실제로 준비한 GRCh38 파일 경로**로 바꾸세요.
+>
+> `TODO_...`로 시작하는 값을 그대로 두면
+> preflight가 **placeholder임을 인식하고 실행을 거부합니다.**
+> 조용히 넘어가지 않습니다.
+
+> [!WARNING]
+> **`contig_style`의 `"chr"`은 예시 값이지 확정 값이 아닙니다.**
+>
+> GRCh38이라는 이유만으로 `chr`이 되지 않습니다.
+> 같은 GRCh38이라도 배포본에 따라 contig 이름이 `chr1`일 수도 `1`일 수도 있습니다.
+> 준비한 FASTA의 `.fai` 첫 열을 직접 확인하세요.
+>
+> ```bash
+> cut -f1 <reference>.fa.fai | head -5
+> ```
+>
+> - `chr1` 형식이면 → `chr` (또는 `ucsc`)
+> - `1` 형식이면 → `plain` (또는 `nochr`, `ensembl`)
+>
+> 잘못 적어도 **조용히 넘어가지 않습니다.** preflight가 실제 FASTA와 대조해
+> 불일치하면 실행을 거부합니다. 그래서 이 필드는 "추측해서 맞히는 값"이 아니라
+> **"내가 의도한 바를 선언하고 파이프라인이 검증하게 하는 값"**입니다.
+
+> [!NOTE]
+> known-sites, dbSNP, ClinVar, truth set, ANNOVAR humandb가 **모두 같은
+> GRCh38 파일과 좌표계·contig 이름이 호환되는지** 직접 확인해야 합니다.
+> "GRCh38"이라는 이름만 같다고 primary assembly, UCSC hg38, analysis set,
+> ALT/decoy 포함 여부가 자동으로 일치하지는 않습니다.
+>
+> preflight는 이 중 **구조적으로 확인 가능한 부분**(contig 이름, contig 길이, 좌표 범위)을
+> 검사하지만, **같은 release에서 왔다는 사실까지 증명하지는 못합니다.**
+> 자세한 내용은 [4.4](#44-build가-안-맞으면-왜-위험한가)를 보세요.
 
 ### 7.2 최상위 key
 
@@ -850,23 +969,66 @@ bundle 단위로 **한 번 준비**해 두고, run 중에는 읽기 전용으로
 | Key | 타입 | 필수 | 기본값 | 의미 | 변경 영향 |
 |---|---|:---:|---|---|---|
 | `bundle_id` | string | 선택 | `""` | bundle 이름 (기록·로그용) | 기록만 |
-| `assembly` | string | 선택 | `""` | 예: `GRCh37`. 기록과 메시지에 사용 | 로그·methods 표기 |
-| `contig_style` | string | 선택 | `""` | 예: `b37`. **실제 reference와 대조 검증됨** | 불일치 시 preflight 실패 |
+| `assembly` | string | **필수** | — | 이 bundle의 reference assembly 이름. 권장값 `GRCh38`. **특정 문자열로 제한하지 않으며, 명시적으로 선언되기만 하면 됩니다** | 비었거나 `TODO...` placeholder면 **즉시 실패**. provenance·methods 기록, InterVar build 대조에 사용 |
+| `contig_style` | string | **필수** | — | **assembly가 아니라 염색체 이름 표기 방식**입니다. `chr`/`ucsc` 또는 `plain`/`nochr`/`ensembl`만 허용. **실제 reference와 대조 검증됨** | 목록 밖의 값·오타·placeholder·assembly 이름이면 **즉시 실패**. 실제 FASTA와 불일치해도 preflight 실패 |
 | `reference_fasta` | path | 필수 | `""` | reference FASTA 경로 | 분석 기준 전체가 바뀜 |
 | `target_bed` | path | 필수 | `""` | target BED 경로 | 분석 영역 전체가 바뀜 |
 | `known_sites` | array | 필수 | `[]` | known-sites 파일 배열. **비어 있으면 preflight 실패** | BQSR 결과가 바뀜 |
-| `dbsnp_vcf` | path | 선택 | `""` | rsID 부여용 | 없으면 warning 후 진행. 변이 자체는 불변 |
+| `dbsnp_vcf` | path | 선택 | `""` | rsID 부여용. **선언하지 않으면** warning 후 진행(변이 자체는 불변). **선언했다면** known-sites와 동일한 구조 검사를 통과해야 함 | 선언 후 구조 불일치면 **core 실행 전에 preflight 실패** |
 | `clinvar_vcf` | path | 선택 | `""` | annotation용 ClinVar VCF | annotation 결과 |
 | `vep_cache` | path | 선택 | `""` | VEP 로컬 캐시 경로 | 현재는 경고 메시지에만 영향 |
 | `truth_vcf` | path | 선택 | `""` | benchmark용 | **비교 로직 미구현** |
 | `truth_bed` | path | 선택 | `""` | benchmark용 | **비교 로직 미구현** |
 
-`contig_style` 검증 규칙(`validate_reference_bundle`):
+#### `assembly` 검증 규칙 (`normalize_config`)
 
-- `b37`, `ensembl`, `plain`, `grch37`, `nochr` 중 하나를 선언했는데
+| 값 | 결과 |
+|---|---|
+| `"GRCh38"` | 통과 (현재 권장 profile) |
+| `"CHM13v2.0"` 등 다른 명시적 assembly 이름 | **통과** — 엔진은 assembly를 제한하지 않습니다 |
+| `""` (빈 문자열) | **실패** |
+| `null` | **실패** (빈 문자열로 읽힘) |
+| `"   "` (공백만) | **실패** |
+| `"TODO_GRCH38_ASSEMBLY"` | **실패** (placeholder 인식) |
+
+> `GRCh38`이 아니면 실패시키는 검사는 **없습니다.**
+> 막는 것은 "다른 assembly"가 아니라 **"선언되지 않은 assembly"**입니다.
+> 값이 비어 있으면 provenance 기록과 InterVar build 대조가 조용히 무력화되기 때문입니다.
+
+#### `contig_style` 검증 규칙
+
+**1단계 — 어휘 검사 (`normalize_config`)**
+
+허용값은 다섯 개뿐입니다. 대소문자는 구분하지 않고 소문자로 정규화됩니다.
+
+| 표기 방식 | 허용값 |
+|---|---|
+| `1`, `2`, … `MT` | `plain`, `nochr`, `ensembl` |
+| `chr1`, `chr2`, … `chrM` | `chr`, `ucsc` |
+
+다음은 **모두 즉시 실패**합니다.
+
+| 값 | 실패 이유 |
+|---|---|
+| `""`, `null`, `"  "` | 선언되지 않음 |
+| `"TODO_GRCH38_CONTIG_STYLE"` | 미치환 placeholder |
+| `"chrs"`, `"plian"` | 허용 목록에 없는 오타 |
+| `"GRCh38"`, `"hg38"` | **assembly/build 이름은 contig style이 아닙니다** |
+
+**2단계 — 실제 FASTA와 대조 (`validate_reference_bundle`)**
+
+- `plain`/`nochr`/`ensembl`을 선언했는데
   reference contig의 과반이 `chr`로 시작하면 → **실패**
-- `ucsc`, `chr`, `hg19`, `hg38` 중 하나를 선언했는데
+- `chr`/`ucsc`를 선언했는데
   reference가 `chr`를 쓰지 않으면 → **실패**
+
+> [!NOTE]
+> 예전에는 허용 목록에 없는 값을 적으면 대조 검사를 **조용히 건너뛰었습니다.**
+> 지금은 1단계에서 먼저 막히고, 2단계에도 명시적 `else` 분기가 있어
+> **어떤 경우에도 검사가 조용히 꺼지지 않습니다.**
+>
+> 또한 `GRCh38`이라는 이유만으로 `chr`을 강제하지 않습니다.
+> 판정 기준은 언제나 **실제 FASTA의 contig 이름**입니다.
 
 ### 7.4 optional step 설정
 
@@ -880,12 +1042,42 @@ bundle 단위로 **한 번 준비**해 두고, run 중에는 읽기 전용으로
 | `filtering.min_gq` | int | preset 값 | `FORMAT/GQ` 하한 |
 | `filtering.min_alt_depth` | int | preset 값 | `FORMAT/AD[0:1]` 하한 |
 | `intervar.install_dir` | path | `""` | InterVar 설치 디렉터리. 없으면 step 실패 |
-| `intervar.build` | string | `""` | InterVar genome build. **반드시 명시**해야 하며 비어 있으면 step 실패 |
+| `intervar.build` | string | `""` | InterVar genome build. **반드시 명시**해야 하며, 비어 있거나 `resource_bundle.assembly`와 대응하지 않으면 step 실패 |
 | `intervar.humandb_dir` | path | `""` | ANNOVAR humandb 경로. 없으면 step 실패 |
+
+#### `intervar.build`와 `assembly`의 대응 검사
+
+`intervar.build`는 이제 **비어 있는지만 보지 않고, 선언한 assembly와 실제로
+대응하는지까지 확인**합니다. 검사는 **optional InterVar step 안에서만** 수행되며,
+core 파이프라인에는 영향을 주지 않습니다.
+
+매핑표는 `main.sh` 상단의 `INTERVAR_BUILD_FOR_ASSEMBLY`에 있습니다.
+
+```bash
+declare -A INTERVAR_BUILD_FOR_ASSEMBLY=(
+    [grch38]=hg38
+)
+```
+
+| assembly | intervar.build | 결과 |
+|---|---|---|
+| `GRCh38` | `hg38` | 통과 |
+| `GRCh38` | `hg19` | **실패** — `intervar_build_mismatch` |
+| `GRCh38` | `hg38x` (오타) | **실패** — `intervar_build_mismatch` |
+| 매핑표에 없는 assembly | 무엇이든 | **실패** — `intervar_assembly_unmapped` |
+
+> [!IMPORTANT]
+> 매핑표에 없는 assembly라도 **core 파이프라인(QC ~ raw VCF)은 정상 실행됩니다.**
+> 막히는 것은 optional InterVar 단계 하나뿐이고,
+> 실패 메시지도 "core가 아니라 optional 설정 문제"임을 명시합니다.
+>
+> 새 assembly를 쓰려면 해당 build의 ANNOVAR humandb를 준비한 뒤
+> 위 표에 한 줄만 추가하면 됩니다.
+> 파이프라인을 GRCh38 전용으로 만들지 않기 위한 구조입니다.
 
 ```json
 "filtering": { "preset": "balanced", "min_dp": 5, "min_gq": 10, "min_alt_depth": 3 },
-"intervar":  { "install_dir": "/opt/InterVar", "build": "hg19",
+"intervar":  { "install_dir": "/opt/InterVar", "build": "hg38",
                "humandb_dir": "/opt/InterVar/humandb" }
 ```
 
@@ -1138,10 +1330,30 @@ samplesheet가 깨져 있으면 이후 검사가 의미 없기 때문입니다.
 - known-sites마다 `.tbi` 또는 `.csi` 인덱스가 있는가
 - known-sites 헤더가 `bcftools view -h`로 파싱되는가
 - known-sites의 모든 contig가 reference contig의 부분집합인가
+- known-sites 헤더에 contig 길이가 있으면 reference `.fai`의 길이와 같은가
+- **`dbsnp_vcf`를 선언했다면 위 다섯 항목을 똑같이 통과하는가**
+
+known-sites와 dbSNP는 `check_vcf_resource()`라는 **하나의 helper**를 공유합니다.
+같은 종류의 resource에 서로 다른 기준을 적용하지 않기 위해서입니다.
 
 부수적으로 다음 지표를 기록합니다:
 `target_rows`(원본 BED 행 수), `target_merged_rows`(겹침 제거 후 행 수),
 `target_merged_bases`(겹침 제거 후 총 염기 수), `assembly`, `contig_style`, `bundle_id`.
+
+> [!IMPORTANT]
+> **이 검사의 결론은 `structurally compatible`입니다.**
+>
+> 통과 메시지는 다음과 같이 기록됩니다.
+>
+> ```
+> [OK] Resource bundle is structurally compatible
+>      (contig names, lengths and coordinate ranges agree).
+> [NOTE] Structural compatibility is not proof of shared build provenance;
+>        that is asserted by the declared resource_bundle, not by these checks.
+> ```
+>
+> `build verified`나 `same build confirmed`라고 쓰지 않습니다.
+> 이유는 [4.4](#44-build가-안-맞으면-왜-위험한가)에 있습니다.
 
 > **`$HOME` 경로 제한을 제거한 이유**
 > 원본 코드에는 reference가 `$HOME/sideprojects/` 아래에 있어야 한다는 검사와
@@ -2114,9 +2326,33 @@ gatk --java-options "$java_opts" GenotypeGVCFs \
 
 | 상황 | 처리 |
 |---|---|
-| `dbsnp_vcf` 선언 + 읽기 가능 | `--dbsnp` 추가 |
-| `dbsnp_vcf` 선언했지만 읽을 수 없음 | warning `DBSNP_MISSING`, rsID 없이 진행 |
+| `dbsnp_vcf` 선언 + 구조 검사 통과 | `--dbsnp` 추가 |
+| **`dbsnp_vcf` 선언했지만 구조 검사 실패** | **`00_input_validation`에서 preflight 실패 — core 실행 전에 중단** |
 | `dbsnp_vcf` 미선언 | warning `DBSNP_NOT_CONFIGURED`, rsID 없이 진행 |
+
+> [!IMPORTANT]
+> **dbSNP는 "선언하지 않을 자유"는 있어도 "잘못 선언할 자유"는 없습니다.**
+>
+> 선언하지 않으면 rsID만 안 붙고 변이 자체는 그대로이므로 warning 후 진행합니다.
+> 하지만 일단 선언하면 그 파일은 **core 단계인 GenotypeGVCFs에 전달**되므로,
+> `00_input_validation`에서 known-sites와 **똑같은 구조 검사**를 받습니다.
+>
+> | 검사 항목 |
+> |---|
+> | 파일 존재 및 non-empty |
+> | `.tbi` 또는 `.csi` index 존재 |
+> | `bcftools view -h`로 header 파싱 가능 |
+> | tabix contig 목록이 reference contig의 부분집합 |
+> | header에 contig 길이가 있으면 reference `.fai`와 일치 |
+>
+> 하나라도 실패하면 core가 시작되기 전에 멈춥니다.
+> run이 몇 시간 진행된 뒤 rsID 단계에서 문제를 발견하는 것보다 낫기 때문입니다.
+>
+> `run_variant_calling()`의 `DBSNP_MISSING` warning은 그대로 남아 있지만,
+> 이제는 preflight 이후 파일이 사라진 경우에만 도달하는 **2차 안전망**입니다.
+>
+> 이 검사도 **구조적 호환성만** 확인합니다. 같은 release에서 왔다는 보장은
+> `resource_bundle` 계약이 담당합니다 ([4.4](#44-build가-안-맞으면-왜-위험한가) 참고).
 
 **왜 single sample인데 두 단계로 나누나**
 gVCF는 "증거", raw VCF는 "판정"입니다.
@@ -2364,10 +2600,38 @@ bcftools annotate -a "$CLINVAR_VCF" \
 > **build가 다르면 엉뚱한 변이에 임상 해석이 붙습니다.**
 > 에러 없이 조용히 일어나므로 가장 위험합니다.
 >
-> 그래서 주석을 붙이기 **전에** callset과 ClinVar VCF의 contig 명명 규칙
-> (`##contig=<ID=chr…` 사용 여부)을 비교하고,
-> 다르면 주석을 **건너뜁니다** (warning `CLINVAR_CONTIG_STYLE_MISMATCH`).
+> 그래서 주석을 붙이기 **전에** ClinVar VCF를 reference와 대조합니다
+> (`check_vcf_against_reference()`).
+>
+> | 검사 항목 | 실패 예 |
+> |---|---|
+> | 파일 존재 및 non-empty | 경로 오타 |
+> | `.tbi`/`.csi` index 존재 | 인덱스를 만들지 않음 |
+> | header 파싱 가능 | 손상된 파일 |
+> | header의 contig 길이가 reference `.fai`와 일치 | **다른 build의 ClinVar** |
+> | tabix contig가 reference의 부분집합 | reference에 없는 contig 포함 |
+> | contig 명명 규칙이 reference와 동일 | `chr1` vs `1` |
+>
+> 하나라도 어긋나면 주석을 **건너뛰고** warning `CLINVAR_INCOMPATIBLE`을 남깁니다.
 > 틀린 결과를 만드는 것보다 만들지 않는 편이 안전하기 때문입니다.
+>
+> **core 정책은 그대로입니다.** ClinVar가 호환되지 않아도
+> raw VCF와 normalized VCF는 그대로 유효하며, run 전체가 실패하지 않습니다.
+
+> [!IMPORTANT]
+> **contig 명명 규칙 비교만으로는 build 검증이 되지 않습니다.**
+>
+> 위 검사는 **구조적 호환성**을 확인할 뿐입니다.
+> 같은 GRCh38이라도 ClinVar release가 다르면 주요 염색체 이름과 길이는
+> 똑같으면서 내용은 다를 수 있고, 이 검사는 그것을 잡아내지 못합니다.
+>
+> ClinVar가 선언한 assembly의 것이라는 보장은 **`resource_bundle` 계약**에서 나옵니다 —
+> bundle 안의 모든 resource는 `resource_bundle.assembly`의 것이어야 합니다.
+> **정확한 release와 출처는 run config 또는 bundle provenance에 사람이 기록해야 합니다.**
+>
+> 이 때문에 resource마다 별도의 assembly key를 추가하지 않았습니다.
+> key를 늘려도 값의 진위는 여전히 사람이 보증해야 하므로,
+> **계약을 문서로 명확히 하는 쪽**을 택했습니다.
 
 **③ VEP — 현재 상태를 정확히**
 
@@ -2436,7 +2700,7 @@ BRCA Exchange, REVEL, SpliceAI는 제안 자료에만 있었고 구현된 적이
 |---|---|
 | **출력** | `optional/annotation/<sample>.normalized.vcf.gz` (+`.tbi`), `<sample>.clinvar.vcf.gz` (+`.tbi`), `<sample>.variants.tsv` |
 | **실패 조건** | 하드오프 문서 없음, 입력 VCF 없음, `bcftools norm` 비정상 종료 또는 빈 출력, 정규화 인덱스 생성 실패 |
-| **warning** | `CLINVAR_NOT_CONFIGURED`, `CLINVAR_MISSING`, `CLINVAR_CONTIG_STYLE_MISMATCH`, `CLINVAR_ANNOTATE_FAILED`, `VEP_MISSING`, `VEP_NOT_WIRED`, `TSV_FAILED` |
+| **warning** | `CLINVAR_NOT_CONFIGURED`, `CLINVAR_MISSING`, `CLINVAR_INCOMPATIBLE`, `CLINVAR_ANNOTATE_FAILED`, `VEP_MISSING`, `VEP_NOT_WIRED`, `TSV_FAILED` |
 | **core 보존** | 실패해도 raw VCF와 core artifact는 그대로 유효 |
 
 변이 TSV에는 다음 문구가 artifact 설명으로 붙습니다:
@@ -2489,8 +2753,42 @@ InterVar와 ANNOVAR humandb는 **미리 설치되어 있어야 합니다.**
 | 설정 | 없으면 |
 |---|---|
 | `intervar.install_dir` | step 실패. `InterVar.py`가 그 안에 있어야 함 |
-| `intervar.build` | step 실패. **추정하지 않음** |
+| `intervar.build` | step 실패. **추정하지 않음.** 또한 `resource_bundle.assembly`와 대응해야 함 |
 | `intervar.humandb_dir` | step 실패 |
+
+#### assembly와 build의 대응 검사
+
+`intervar.build`가 채워져 있기만 하면 되는 것이 아니라,
+선언한 assembly에 **실제로 대응하는 값**이어야 합니다.
+
+```bash
+# main.sh 상단 — 확장 가능한 매핑표
+declare -A INTERVAR_BUILD_FOR_ASSEMBLY=(
+    [grch38]=hg38
+)
+```
+
+| 실패 코드 | 언제 | 메시지가 알려 주는 것 |
+|---|---|---|
+| `intervar_build_not_set` | `intervar.build`가 비어 있음 | 추정하지 않는다는 사실 |
+| `intervar_build_mismatch` | 예: assembly=`GRCh38`인데 build=`hg19` | 현재 assembly, 입력된 build, **기대되는 build** |
+| `intervar_assembly_unmapped` | assembly가 매핑표에 없음 | 현재 assembly, 입력된 build, **등록된 매핑 목록 전체** |
+
+세 메시지 모두 첫 문장이 다음으로 시작합니다.
+
+```
+Optional InterVar step configuration problem — the CORE pipeline and the raw VCF are unaffected.
+```
+
+즉 **core 파이프라인이 실패한 것이 아니라 optional 설정이 어긋난 것**임을 분명히 합니다.
+
+> [!NOTE]
+> 이 검사는 **optional InterVar step 안에서만** 수행됩니다.
+> core preflight에서는 하지 않습니다.
+> 매핑이 없는 assembly라도 QC부터 raw VCF까지는 정상적으로 완주해야 하기 때문입니다.
+>
+> 새 assembly를 지원하려면 해당 build의 ANNOVAR humandb를 준비한 뒤
+> 매핑표에 한 줄을 추가하세요. 다른 코드는 바꿀 필요가 없습니다.
 
 직전 리비전에서 제거한 것:
 
@@ -2498,8 +2796,8 @@ InterVar와 ANNOVAR humandb는 **미리 설치되어 있어야 합니다.**
 |---|---|
 | `git clone https://github.com/WGLab/InterVar.git` | 분석 도중 소프트웨어 설치 |
 | `pip install -r requirements.txt --break-system-packages` | 시스템 패키지 관리자의 보호를 의도적으로 무력화 |
-| `python InterVar.py --download_db -d humandb/ -b hg38` | run이 수십 GB 데이터베이스 다운로드를 유발 |
-| `-b hg38` 하드코딩 | 나머지 파이프라인이 쓰는 **b37 리소스와 모순**. 좌표계가 어긋나 결과가 무의미해짐 |
+| `python InterVar.py --download_db -d humandb/` | run이 수십 GB 데이터베이스 다운로드를 유발 |
+| `-b` build 하드코딩 | config에서 읽지 않으므로 **나머지 파이프라인이 쓰는 resource의 reference build와 모순**될 수 있음. 좌표계가 어긋나 결과가 무의미해짐 |
 | `find … -name "*.annotated.vcf" \| head -1` | 다른 run이나 다른 사용자의 파일을 집어올 수 있음 |
 
 **build 하드코딩 제거가 특히 중요한 이유**: `-b`가 틀리면 도구는 정상 종료하지만
@@ -2508,8 +2806,11 @@ InterVar와 ANNOVAR humandb는 **미리 설치되어 있어야 합니다.**
 
 ```
 intervar.build is not set. The build must match the resource bundle
-(assembly=GRCh37); it is never assumed.
+(assembly=GRCh38); it is never assumed.
 ```
+
+현재 기준인 GRCh38 bundle에서는 `intervar.build`를 `hg38`로 지정하고,
+ANNOVAR humandb도 같은 build로 준비한 것을 사용해야 합니다.
 
 ### 18.4 입력 선택
 
@@ -2960,7 +3261,7 @@ WES 전체 실행은 몇 시간이 걸립니다.
 
 **resource 내용까지 해시하는 이유**
 경로는 그대로인데 파일만 바꿔치기하는 경우를 잡기 위함입니다.
-이게 없으면 "같은 `/ref/hs37d5.fa`"인데 내용이 다른 상황을 탐지할 수 없습니다.
+이게 없으면 "같은 `/ref/reference.fa` 경로"인데 내용이 다른 상황을 탐지할 수 없습니다.
 
 **FASTQ 지문 정책**
 
@@ -3490,7 +3791,7 @@ InterVar는 읽기만 합니다.
 | **runtime install** (371, 1519, 2213–2217행) | 제거 | 명백한 오류로 제거 | 아래 24.5 |
 | **`latest_v5` symlink** (1386행) | 제거 | 명백한 오류로 제거 | 공유 가변 심볼릭 링크는 마지막으로 끝난 run이 덮어씀. 한 사용자가 다른 사용자의 로그를 보게 됨 |
 | **glob 자동 탐색** (301–314, 1448, 2192행) | 제거 | 명백한 오류로 제거 | 다른 run·다른 사용자의 파일을 집을 수 있고 `find` 순서가 결정적이지 않음. [19.4](#194-glob으로-최신-파일을-찾지-않는-이유) |
-| **GRCh38/hg38 혼용** (2295행) | 제거 | 명백한 오류로 제거 | 나머지 파이프라인의 b37 리소스와 모순. build는 이제 config에서 명시 |
+| **reference build 혼용** (2295행) | 제거 | 명백한 오류로 제거 | InterVar build가 하드코딩되어 나머지 파이프라인 리소스의 reference build와 어긋날 수 있었음. build는 이제 config에서 명시 |
 | **유방암 BED fallback** (1461–1479행) | 제거 | 명백한 오류로 제거 | 전장 엑솜 target을 8개 유전자 약 0.4 Mb로 조용히 대체한 뒤 결과를 엑솜 coverage로 보고 |
 | **여러 top-level `main "$@"`** (399, 1565, 2323행) | 제거 | 명백한 오류로 제거 | 각 블록이 자기 자신을 실행. 이제 파일 맨 끝에 정확히 하나 |
 | **중간 `exit 0`** (1397행) | 제거 | 명백한 오류로 제거 | 이후 926줄(파일의 40%)이 **도달 불가능**. 게다가 그 앞에서 성공 메시지를 출력해 부분 실행이 완료처럼 보였음 |
@@ -3509,7 +3810,7 @@ conda install -c bioconda fastp -y            # 371행
 conda install -c bioconda mosdepth -y         # 1519행
 git clone https://github.com/WGLab/InterVar.git   # 2213행
 pip install -r requirements.txt --break-system-packages   # 2215행
-python InterVar.py --download_db -d humandb/ -b hg38      # 2217행
+python InterVar.py --download_db -d humandb/              # 2217행
 ```
 
 | 문제 | 설명 |
@@ -3518,7 +3819,7 @@ python InterVar.py --download_db -d humandb/ -b hg38      # 2217행
 | **공유 환경 오염** | 분석 도중 서버 환경을 바꾸면 같은 서버를 쓰는 다른 사람에게 영향을 줍니다 |
 | **보호 장치 무력화** | `--break-system-packages`는 시스템 패키지 관리자의 보호를 의도적으로 우회합니다 |
 | **자원 소모** | `--download_db`는 run 하나가 수십 GB 다운로드를 유발합니다 |
-| **build 모순** | `-b hg38`은 나머지 파이프라인의 b37 리소스와 충돌합니다 |
+| **build 모순** | 하드코딩된 `-b` 값은 나머지 파이프라인 리소스의 reference build와 충돌할 수 있습니다 |
 
 **지식은 잃지 않았습니다.** 설치 절차는 [6.7](#67-실행-전-준비물)에 기록되어 있으며,
 **사람이 한 번 수행하는 준비 작업**으로 위치가 바뀌었을 뿐입니다.
@@ -3814,8 +4115,10 @@ bcftools view -H $RUN/06_variant_calling/*.raw.vcf.gz | wc -l
 # 요약 통계
 less $RUN/06_variant_calling/*.raw.bcftools.stats.txt
 
-# 특정 영역 (b37 좌표계 예시)
-bcftools view $RUN/06_variant_calling/*.raw.vcf.gz 7:117120000-117310000
+# 특정 영역
+# 좌표와 contig 이름은 사용한 GRCh38 bundle의 contig_style에 맞춰 적으세요.
+# chr 접두사를 쓰는 bundle이면 chr7:..., 쓰지 않으면 7:... 형식입니다.
+bcftools view $RUN/06_variant_calling/*.raw.vcf.gz <contig>:<start>-<end>
 
 # sample 이름 확인
 bcftools query -l $RUN/06_variant_calling/*.raw.vcf.gz
@@ -3847,14 +4150,18 @@ WES에서 보통 2.8~3.3 범위입니다. 크게 벗어나면 위양성이 많�
 
 ### 26.3 VCF 한 줄 읽는 법
 
+아래는 **컬럼 구조를 보여 주기 위한 예시**입니다.
+contig 이름과 좌표는 실제로 사용한 GRCh38 bundle에 따라 달라지므로
+이 숫자를 특정 변이의 GRCh38 좌표로 인용하지 마세요.
+
 ```
-#CHROM POS       ID          REF ALT QUAL   FILTER INFO        FORMAT      HG002
-7      117199644 rs113993960 CTT C   1250.5 PASS   AC=1;AF=0.5 GT:AD:DP:GQ 0/1:15,18:33:99
+#CHROM POS        ID          REF ALT QUAL   FILTER INFO        FORMAT      HG002
+chr7   <POSITION> rs113993960 CTT C   1250.5 PASS   AC=1;AF=0.5 GT:AD:DP:GQ 0/1:15,18:33:99
 ```
 
 | 컬럼 | 의미 |
 |---|---|
-| `CHROM` | 염색체 이름. b37에서는 `7`, hg38에서는 `chr7` |
+| `CHROM` | 염색체 이름. bundle의 `contig_style`에 따라 `chr7`(chr/ucsc) 또는 `7`(plain/nochr/ensembl) |
 | `POS` | 그 염색체 위의 위치 (1부터 시작) |
 | `ID` | 변이 식별자. dbSNP를 넣었으면 `rs…`, 없으면 `.` |
 | `REF` | reference의 서열 |
@@ -3937,7 +4244,17 @@ genotype 표기:
 | `reference sequence dictionary (.dict) missing` | 동일 | 동일 | `gatk CreateSequenceDictionary -R <ref>` |
 | `BWA index (.bwt) missing` | 동일 | 동일 | `bwa index <ref>` (WES reference는 수십 분) |
 | `reference .fai and .dict disagree` | 서로 다른 시점에 만든 인덱스 | 동일 | 인덱스를 모두 다시 생성 |
-| `contig_style='b37' declares no 'chr' prefix but the reference uses 'chr'` | bundle 메타데이터와 실제 reference 불일치 | config `resource_bundle` | `contig_style`을 고치거나 맞는 reference 지정 |
+| `contig_style='plain' declares no 'chr' prefix but the reference uses 'chr'` | bundle 메타데이터와 실제 reference 불일치 | config `resource_bundle` | `contig_style`을 고치거나(이 경우 `chr`) 맞는 reference 지정 |
+| `contig_style='chr' declares a 'chr' prefix but the reference does not use it` | 위와 반대 방향의 불일치 | 동일 | `contig_style`을 `plain`으로 고치거나 맞는 reference 지정 |
+| `resource_bundle.assembly is required` | `assembly` 미선언·`null`·공백 | config `resource_bundle` | 이 bundle의 assembly 이름을 적으세요 (권장 profile은 `GRCh38`). **특정 값으로 제한되지 않습니다** |
+| `resource_bundle.assembly is still a template placeholder` | `TODO_...` 값을 그대로 둠 | 동일 | 실제 assembly 이름으로 교체 |
+| `resource_bundle.contig_style is required` | `contig_style` 미선언·`null`·공백 | 동일 | `.fai` 첫 열을 확인하고 `chr` 또는 `plain` 선언 |
+| `resource_bundle.contig_style is still a template placeholder` | `TODO_...` 값을 그대로 둠 | 동일 | 동일 |
+| `resource_bundle.contig_style must be one of: plain nochr ensembl chr ucsc` | 오타이거나 **assembly/build 이름을 contig_style에 적음** (`GRCh38`, `hg38` 등) | 동일 | assembly는 `assembly` key에, 이름 표기 방식은 `contig_style` key에 |
+| `contig_style='…' is not a recognised chromosome naming convention` | 위와 같은 값이 preflight까지 도달한 경우 | `resource_validation.txt` | 동일 |
+| `dbsnp_vcf index missing (.tbi or .csi)` | 선언한 dbSNP에 인덱스 없음 | `resource_validation.txt` | `tabix -p vcf <file>` |
+| `dbsnp_vcf contigs absent from the reference` | dbSNP의 build가 다름 | 동일 | 같은 build의 dbSNP 사용, 또는 선언 자체를 제거 |
+| `… declares contig lengths that differ from the reference` | known-sites/dbSNP header의 contig 길이가 reference `.fai`와 다름 | 동일 | **다른 build입니다.** 같은 build의 파일로 교체 |
 | `BED line N: contig absent from reference` | BED와 reference의 build 불일치 | `resource_validation.txt` | 같은 build의 BED 사용 |
 | `BED line N: interval out of range` | 동일 | 동일 | 동일 |
 | `target BED contigs absent from the BAM header` | BED와 정렬 reference 불일치 | `05_coverage_qc/target_bed_check.txt` | build 통일 후 정렬부터 다시 |
@@ -3974,6 +4291,9 @@ genotype 표기:
 | `RUN_COMPLETED_WITH_WARNINGS` | warning이 있거나 optional이 실패함 | `final_validation.tsv`의 `WARN` 행 | **실패가 아닙니다.** warning 내용을 확인하고 판단 |
 | MultiQC 관련 warning | MultiQC 미설치/실패 | — | **무시해도 됩니다.** 분석 결과에 영향 없음 |
 | `DBSNP_NOT_CONFIGURED` | bundle에 dbSNP 미선언 | — | rsID만 없습니다. 변이 자체는 동일 |
+| `CLINVAR_INCOMPATIBLE` | ClinVar가 reference와 구조적으로 불일치 (index·header·contig·길이·명명 규칙 중 하나) | warning 메시지의 상세 사유 | ClinVar를 같은 build로 교체. **raw VCF는 정상입니다** |
+| `Optional InterVar step configuration problem … expects intervar.build='…'` | assembly와 `intervar.build` 불일치 | config `intervar` | 메시지가 알려 주는 기대값으로 수정. **core 결과는 무사합니다** |
+| `Optional InterVar step configuration problem … has no InterVar/ANNOVAR build mapping` | 매핑표에 없는 assembly | `main.sh`의 `INTERVAR_BUILD_FOR_ASSEMBLY` | 매핑 한 줄 추가, 또는 `optional_steps.intervar`를 끄기 |
 | `VEP_NOT_WIRED` | VEP 캐시는 있으나 호출 미구현 | — | 현재 알려진 한계입니다 |
 | `AUTOMATED_EVIDENCE_ONLY` | InterVar 결과의 성격 안내 | — | **항상 나옵니다.** 수동 검토 필요를 알리는 것 |
 
@@ -4014,8 +4334,25 @@ genotype 표기:
 
 ### 28.1 실행 검증이 되지 않은 항목
 
+검증 단계별 현재 위치입니다.
+
+| 단계 | 상태 | 무엇을 확인했는가 |
+|---|---|---|
+| **static validation** | **완료** | `bash -n`, `--help`, 코드↔문서 정합성 |
+| **resource validation** (`--check-only`) | **미완료** | 실제 config·resource가 없어 수행 불가 |
+| **execution validation** | **미완료** | subset/full WES 실행 없음 |
+
+> [!WARNING]
+> static validation은 **문법과 문서 정합성만** 말해 줍니다.
+> 특정 bundle이 실제로 동작하는지에 대해서는 **아무것도 증명하지 않습니다.**
+
 | 항목 | 상태 | 왜 중요한가 |
 |---|---|---|
+| **GRCh38 resource bundle 확정** | 미확정 | 권장 profile은 GRCh38이지만, 어떤 GRCh38 배포본(primary assembly / analysis set / ALT·decoy 포함 여부)과 어떤 target BED·known-sites·dbSNP·ClinVar·truth set을 쓸지 아직 정해지지 않았습니다. 7장 config 예시의 경로가 `TODO_GRCH38_*` placeholder인 이유입니다 |
+| **GRCh38 `contig_style`** | 미확정 | 실제 FASTA의 `.fai`를 확인하기 전에는 `chr`인지 `plain`인지 단정할 수 없습니다. 7장 예시의 `"chr"`은 **예시 값이며 확정 값이 아닙니다** |
+| **GRCh38 profile `--check-only`** | 미완료 | 위 두 항목이 정해지기 전에는 수행할 수 없습니다. **따라서 "GRCh38 profile이 검증되었다"고 말할 수 없습니다** |
+| **build provenance 확인 수단** | 구조 검사까지만 구현 | preflight는 contig 이름·길이·좌표 범위만 확인합니다. 같은 release에서 왔는지는 **사람이 보증**해야 합니다 ([4.4](#44-build가-안-맞으면-왜-위험한가)) |
+| **GRCh38 외 assembly 실사용** | 미검증 | 엔진은 assembly를 제한하지 않지만, GRCh38 외의 bundle로 실행해 본 적은 없습니다. InterVar를 쓰려면 매핑표 추가도 필요합니다 |
 | **Linux 서버 실제 실행** | 미완료 | 실제 도구를 사용한 실행이 한 번도 없었습니다 |
 | **subset smoke test** | 미완료 | 배선이 실제로 이어지는지 확인되지 않았습니다 |
 | **full WES 실행** | 미완료 | 완주 여부, 소요 시간, 자원 사용량이 미확정입니다 |
@@ -4151,14 +4488,21 @@ fastqc --version
 ### 29.3 4단계: resource config 작성
 
 ```bash
+# 준비한 GRCh38 reference 경로로 바꿔서 실행하세요.
+REF=TODO_GRCH38_REFERENCE_FASTA
+REF_DIR=$(dirname "$REF")
+
 # reference 인덱스가 다 있는지 확인
-REF=/data/ref/b37/hs37d5.fa
 ls -l $REF $REF.fai ${REF%.fa}.dict $REF.amb $REF.ann $REF.bwt $REF.pac $REF.sa
 
 # known-sites 인덱스 확인
-for v in /data/ref/b37/*.vcf.gz; do
+for v in "$REF_DIR"/*.vcf.gz; do
   ls -l "$v" "$v.tbi" 2>/dev/null || echo "인덱스 없음: $v"
 done
+
+# contig_style은 추정하지 말고 .fai에서 직접 확인하세요.
+#   chr1 형식이면 contig_style="chr", 1 형식이면 "plain"
+cut -f1 "$REF.fai" | head -5
 ```
 
 [7장](#7-config-전체-설명)의 예시를 바탕으로 `run_config.json`을 만듭니다.
@@ -4564,13 +4908,12 @@ marker 이름, 상태값, 기본값은 **모두 현재 `script/main.sh`에서 �
 
 | 용어 | 설명 |
 |---|---|
-| **assembly / build** | reference의 판본 (GRCh37, GRCh38 등) |
-| **GRCh37** | 인간 reference의 한 판본 |
-| **b37** | GRCh37 계열 reference. contig 이름이 `1`, `2`, … |
-| **hs37d5** | b37에 decoy 서열을 더한 reference. 현재 검증 profile |
-| **hg19 / hg38** | UCSC 계열 reference. contig 이름이 `chr1`, `chr2`, … |
+| **assembly / build** | reference 유전체의 판본. **이 프로젝트의 현행 기준은 `GRCh38` 하나입니다.** |
+| **GRCh38** | 현재 사용하는 인간 reference 판본. config의 `resource_bundle.assembly`에 적습니다 |
+| **hg38** | GRCh38에 대해 **도구(InterVar/ANNOVAR 등)가 요구하는 build 이름**. `intervar.build`에 씁니다 |
 | **contig** | reference를 구성하는 연속 서열 단위 (염색체 포함) |
-| **contig style** | contig 이름 규칙. `1` 방식인가 `chr1` 방식인가 |
+| **contig style** | contig **이름 표기 규칙**. `1` 방식(`plain`/`nochr`/`ensembl`)인가 `chr1` 방식(`chr`/`ucsc`)인가. **assembly와는 별개의 개념**이며, GRCh38이라고 해서 자동으로 `chr` 방식인 것은 아닙니다 |
+| **primary assembly / analysis set / ALT·decoy 포함 여부** | 같은 GRCh38이라도 배포본마다 포함된 contig 집합이 다릅니다. 이름이 같다고 서로 호환된다고 가정하면 안 됩니다 |
 | **interval padding** | 지정한 영역을 앞뒤로 확장하는 길이 |
 
 ### 데이터베이스와 도구
