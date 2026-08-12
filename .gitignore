@@ -5,3 +5,7 @@
 
 # OS 생성 파일
 .DS_Store
+
+# Python generated files
+__pycache__/
+*.py[cod]
