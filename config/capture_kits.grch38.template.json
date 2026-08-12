@@ -1,19 +1,53 @@
 {
   "schema_version": "1.0",
   "kits": {
-    "example_idt_xgen_exome_v2": {
+    "agilent_sureselect_human_all_exon_v8": {
       "status": "unconfirmed",
-      "manufacturer": "IDT",
+      "manufacturer": "Agilent Technologies",
+      "capture_kit_name": "SureSelect Human All Exon",
+      "capture_kit_version": "V8",
+      "design_id": "TODO_CONFIRMED_DESIGN_ID",
+      "genome_build": "GRCh38",
+      "source": "Agilent SureDesign catalog design files",
+      "source_url": "https://www.agilent.com/en/product/next-generation-sequencing/ngs-assays-panels/exome/sureselect-human-all-exon-4252439",
+      "target_bed": "TODO_AGILENT_SURESELECT_HUMAN_ALL_EXON_V8_GRCH38_TARGET_BED",
+      "target_bed_sha256": "TODO_64_CHARACTER_SHA256"
+    },
+    "idt_xgen_exome_hyb_panel_v2": {
+      "status": "unconfirmed",
+      "manufacturer": "Integrated DNA Technologies (IDT)",
       "capture_kit_name": "xGen Exome Hyb Panel",
       "capture_kit_version": "v2",
       "design_id": "TODO_CONFIRMED_DESIGN_ID",
       "genome_build": "GRCh38",
       "source": "IDT official panel files",
-      "source_url": "https://www.idtdna.com/pages/products/next-generation-sequencing/workflow/xgen-ngs-hybridization-capture/pre-designed-hyb-cap-panels/exome-hyb-panel-v2",
-      "target_bed": "TODO_IDT_XGEN_V2_TARGETS_HG38_BED",
-      "target_bed_sha256": "TODO_64_CHARACTER_SHA256",
-      "coverage_bed": "TODO_IDT_XGEN_V2_PROBES_HG38_BED",
-      "coverage_bed_sha256": "TODO_64_CHARACTER_SHA256"
+      "source_url": "https://www.idtdna.com/pages/products/next-generation-sequencing/targeted-sequencing/hybridization-capture/predesigned-panels/xgen-exome-research-panel-v2",
+      "target_bed": "TODO_IDT_XGEN_EXOME_HYB_PANEL_V2_HG38_TARGET_BED",
+      "target_bed_sha256": "TODO_64_CHARACTER_SHA256"
+    },
+    "twist_exome_2_0": {
+      "status": "unconfirmed",
+      "manufacturer": "Twist Bioscience",
+      "capture_kit_name": "Twist Exome",
+      "capture_kit_version": "2.0",
+      "design_id": "TODO_CONFIRMED_DESIGN_ID",
+      "genome_build": "GRCh38",
+      "source": "Twist Bioscience official data files",
+      "source_url": "https://www.twistbioscience.com/resources/data-files/twist-exome-20-bed-files",
+      "target_bed": "TODO_TWIST_EXOME_2_0_HG38_COVERED_TARGETS_BED",
+      "target_bed_sha256": "TODO_64_CHARACTER_SHA256"
+    },
+    "roche_kapa_hyperexome_v2": {
+      "status": "unconfirmed",
+      "manufacturer": "Roche",
+      "capture_kit_name": "KAPA HyperExome",
+      "capture_kit_version": "V2",
+      "design_id": "TODO_CONFIRMED_DESIGN_ID",
+      "genome_build": "GRCh38",
+      "source": "Roche official hg38 design files",
+      "source_url": "https://diagnostics.roche.com/global/en/products/set/kapa-hyperexome-v2-probes-pid00001174.html",
+      "target_bed": "TODO_ROCHE_KAPA_HYPEREXOME_V2_HG38_TARGET_BED",
+      "target_bed_sha256": "TODO_64_CHARACTER_SHA256"
     }
   }
 }

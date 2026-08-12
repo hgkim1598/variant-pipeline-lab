@@ -18,7 +18,7 @@
   "bqsr_diagnostics": false,
   "resume_strict_checksums": false,
   "capture_kit": {
-    "id": "TODO_CAPTURE_KIT_ID_FROM_UI",
+    "id": "agilent_sureselect_human_all_exon_v8",
     "registry": "config/capture_kits.grch38.template.json"
   },
   "resource_bundle": {

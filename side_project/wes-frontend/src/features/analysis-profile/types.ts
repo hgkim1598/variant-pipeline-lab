@@ -28,16 +28,15 @@ export type Assembly = 'GRCh37' | 'GRCh38';
 /** 프로파일 공개 상태 — UI에서 배지로 표시되고 'coming-soon'은 선택 불가 */
 export type ProfileStatus = 'available' | 'beta' | 'coming-soon';
 
-
 // ── 2) 옵션 필드 스키마 ─────────────────────────────────────────────────────
 // ResFinder의 "? 말머리 툴팁 + 셀렉트박스" 를 데이터로 표현한 것.
 
 export type OptionFieldType =
-  | 'select'    // 드롭다운
-  | 'number'    // 숫자 입력 (min/max/step)
-  | 'slider'    // 슬라이더 (스케일바) — 임계값 조정에 사용
-  | 'boolean'   // 체크박스 / 스위치
-  | 'text';     // 자유 입력
+  | 'select' // 드롭다운
+  | 'number' // 숫자 입력 (min/max/step)
+  | 'slider' // 슬라이더 (스케일바) — 임계값 조정에 사용
+  | 'boolean' // 체크박스 / 스위치
+  | 'text'; // 자유 입력
 
 export interface OptionChoice {
   value: string;
@@ -88,15 +87,14 @@ export interface OptionField {
   };
 }
 
-
 // ── 3) 입력 파일 사양 ───────────────────────────────────────────────────────
 
 export type InputMode =
-  | 'paired-fastq'        // R1/R2 한 쌍 (Illumina)
-  | 'single-fastq'        // 단일 FASTQ (PacBio HiFi, ONT)
-  | 'paired-fastq-tn'     // tumor/normal 각각 R1/R2 (somatic)
-  | 'bam'                 // 정렬 완료 BAM부터 시작
-  | 'vcf';                // 변이 호출 완료 VCF부터 시작 (주석만 수행)
+  | 'paired-fastq' // R1/R2 한 쌍 (Illumina)
+  | 'single-fastq' // 단일 FASTQ (PacBio HiFi, ONT)
+  | 'paired-fastq-tn' // tumor/normal 각각 R1/R2 (somatic)
+  | 'bam' // 정렬 완료 BAM부터 시작
+  | 'vcf'; // 변이 호출 완료 VCF부터 시작 (주석만 수행)
 
 export interface InputSpec {
   mode: InputMode;
@@ -113,14 +111,13 @@ export interface InputSpec {
    * UI는 이 배열 길이만큼 드롭존을 그린다.
    */
   slots: {
-    id: string;         // "tumor_r1"
-    label: string;      // "종양 시료 R1"
+    id: string; // "tumor_r1"
+    label: string; // "종양 시료 R1"
     required: boolean;
     /** 파일명 자동 매칭 패턴 — 정규식 문자열 */
     matchPattern?: string;
   }[];
 }
-
 
 // ── 4) 프로파일 본체 ────────────────────────────────────────────────────────
 
@@ -172,11 +169,12 @@ export interface AnalysisProfile {
   estimatedMinutes?: number;
 }
 
-
 // ── 5) 사용자가 실제로 제출하는 요청 형태 ──────────────────────────────────
 
 export interface SubmitRequest {
   profileId: string;
+  /** WES capture-kit registry key. 백엔드는 이 값을 run_config.capture_kit.id로 기록한다. */
+  captureKitId?: string;
   /** 슬롯 ID → 업로드 완료된 파일 참조(서버 경로 또는 업로드 세션 ID) */
   files: Record<string, string>;
   /** OptionField.key → 사용자가 선택한 값 */

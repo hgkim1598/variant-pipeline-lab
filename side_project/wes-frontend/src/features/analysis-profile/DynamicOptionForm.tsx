@@ -16,7 +16,7 @@
  */
 
 import { useMemo } from 'react';
-import { HelpCircle, ChevronDown } from 'lucide-react';
+import { HelpCircle } from 'lucide-react';
 import type { OptionField } from './types';
 
 import { Label } from '@/components/ui/label';
@@ -88,7 +88,11 @@ function FieldRenderer({
           {labelBlock}
           <Select
             value={String(value)}
-            onValueChange={onChange}
+            onValueChange={(nextValue) => {
+              if (nextValue !== null) {
+                onChange(nextValue)
+              }
+            }}
             disabled={disabled}
           >
             <SelectTrigger id={field.key} className="w-[260px]">
@@ -209,8 +213,8 @@ export function DynamicOptionForm({ fields, values, onChange, disabled }: Props)
     [fields, values],
   );
 
-  const basic    = visible.filter((f) => !f.advanced);
-  const advanced = visible.filter((f) =>  f.advanced);
+  const basic = visible.filter((f) => !f.advanced);
+  const advanced = visible.filter((f) => f.advanced);
 
   return (
     <div className="space-y-1">

@@ -15,7 +15,6 @@
 
 import type { AnalysisProfile, OptionField } from './types';
 
-
 // ── 공통 옵션 조각 ──────────────────────────────────────────────────────────
 // 여러 프로파일이 공유하는 옵션은 여기서 만들어 재사용한다.
 
@@ -53,14 +52,42 @@ const OPT_ASSEMBLY: OptionField = {
   key: 'assembly',
   label: '참조 게놈 빌드',
   help:
-    'GRCh38(hg38)이 현재 표준이며 좌표 정확도가 더 높습니다. ' +
-    'GRCh37(hg19/b37)은 기존 임상 데이터베이스와의 호환성 때문에 아직 널리 쓰입니다. ' +
-    '두 빌드는 좌표 체계가 달라 결과를 서로 비교할 수 없습니다.',
+    '이 파이프라인은 GRCh38 좌표계로 고정되어 있습니다. ' +
+    '참조 FASTA, capture BED, known-sites 및 annotation 리소스가 모두 GRCh38이어야 합니다.',
   type: 'select',
-  default: 'GRCh37',
+  default: 'GRCh38',
+  choices: [{ value: 'GRCh38', label: 'GRCh38 / hg38', note: '고정' }],
+};
+
+const OPT_CAPTURE_KIT: OptionField = {
+  key: 'capture_kit_id',
+  label: 'Exome capture kit',
+  help:
+    'FASTQ 라이브러리를 제작할 때 실제로 사용한 capture kit과 동일한 항목을 선택해야 합니다. ' +
+    '선택값은 백엔드의 capture_kit.id로 전달되며, 해당 GRCh38 target BED와 메타데이터를 불러옵니다.',
+  type: 'select',
+  default: 'agilent_sureselect_human_all_exon_v8',
   choices: [
-    { value: 'GRCh37', label: 'GRCh37 / b37 (hs37d5)', note: '현재 파이프라인 기본' },
-    { value: 'GRCh38', label: 'GRCh38 / hg38', note: '준비 중' },
+    {
+      value: 'agilent_sureselect_human_all_exon_v8',
+      label: 'Agilent SureSelect Human All Exon V8',
+      note: 'GRCh38',
+    },
+    {
+      value: 'idt_xgen_exome_hyb_panel_v2',
+      label: 'IDT xGen Exome Hyb Panel v2',
+      note: 'GRCh38',
+    },
+    {
+      value: 'twist_exome_2_0',
+      label: 'Twist Exome 2.0',
+      note: 'GRCh38',
+    },
+    {
+      value: 'roche_kapa_hyperexome_v2',
+      label: 'Roche KAPA HyperExome V2',
+      note: 'GRCh38',
+    },
   ],
 };
 
@@ -102,26 +129,20 @@ const OPT_GNOMAD_MAF: OptionField = {
   type: 'select',
   default: '0.01',
   choices: [
-    { value: '0.05',  label: '5%  (느슨함)' },
-    { value: '0.01',  label: '1%  (표준)', note: '권장' },
+    { value: '0.05', label: '5%  (느슨함)' },
+    { value: '0.01', label: '1%  (표준)', note: '권장' },
     { value: '0.001', label: '0.1% (엄격)' },
-    { value: 'none',  label: '필터 사용 안 함' },
+    { value: 'none', label: '필터 사용 안 함' },
   ],
   advanced: true,
 };
 
-
 // ── 유방암 소인 유전자 세트 ─────────────────────────────────────────────────
-const BREAST_CANCER_GENES = [
-  'BRCA1', 'BRCA2', 'PALB2', 'ATM',
-  'CHEK2', 'TP53', 'PTEN', 'CDH1',
-];
-
+const BREAST_CANCER_GENES = ['BRCA1', 'BRCA2', 'PALB2', 'ATM', 'CHEK2', 'TP53', 'PTEN', 'CDH1'];
 
 // ── 프로파일 정의 ───────────────────────────────────────────────────────────
 
 export const PROFILES: AnalysisProfile[] = [
-
   // ────────────────────────────────────────────────────────────────────────
   // [1] 현재 구현 완료 — Illumina WES germline 유방암
   // ────────────────────────────────────────────────────────────────────────
@@ -143,13 +164,14 @@ export const PROFILES: AnalysisProfile[] = [
       accept: ['.fastq.gz', '.fq.gz', '.fastq', '.fq'],
       maxFileSizeGb: 30,
       slots: [
-        { id: 'r1', label: 'Read 1 (R1)', required: true,  matchPattern: '_R1[_.]|_1\\.' },
-        { id: 'r2', label: 'Read 2 (R2)', required: true,  matchPattern: '_R2[_.]|_2\\.' },
+        { id: 'r1', label: 'Read 1 (R1)', required: true, matchPattern: '_R1[_.]|_1\\.' },
+        { id: 'r2', label: 'Read 2 (R2)', required: true, matchPattern: '_R2[_.]|_2\\.' },
       ],
     },
 
     options: [
       OPT_ASSEMBLY,
+      OPT_CAPTURE_KIT,
       OPT_MIN_BASE_QUALITY,
       OPT_MIN_READ_LENGTH,
       {
@@ -163,7 +185,7 @@ export const PROFILES: AnalysisProfile[] = [
         default: 'gatk-haplotypecaller',
         choices: [
           { value: 'gatk-haplotypecaller', label: 'GATK HaplotypeCaller', note: '표준' },
-          { value: 'deepvariant',          label: 'DeepVariant (WES 모델)', note: '준비 중' },
+          { value: 'deepvariant', label: 'DeepVariant (WES 모델)', note: '준비 중' },
         ],
       },
       OPT_MIN_DEPTH,
@@ -185,13 +207,12 @@ export const PROFILES: AnalysisProfile[] = [
 
     pipeline: {
       scriptId: 'main.sh',
-      bundleId: 'hs37d5_agilent_v5_b37',
-      assembly: 'GRCh37',
+      bundleId: 'grch38_wes_germline',
+      assembly: 'GRCh38',
     },
 
     estimatedMinutes: 330,
   },
-
 
   // ────────────────────────────────────────────────────────────────────────
   // [2] 확장 예시 — 전체 exome germline (패널 제한 없음)
@@ -220,6 +241,7 @@ export const PROFILES: AnalysisProfile[] = [
 
     options: [
       OPT_ASSEMBLY,
+      OPT_CAPTURE_KIT,
       OPT_MIN_BASE_QUALITY,
       OPT_MIN_READ_LENGTH,
       OPT_MIN_DEPTH,
@@ -231,13 +253,12 @@ export const PROFILES: AnalysisProfile[] = [
 
     pipeline: {
       scriptId: 'main.sh',
-      bundleId: 'hs37d5_agilent_v5_b37',
-      assembly: 'GRCh37',
+      bundleId: 'grch38_wes_germline',
+      assembly: 'GRCh38',
     },
 
     estimatedMinutes: 340,
   },
-
 
   // ────────────────────────────────────────────────────────────────────────
   // [3] 확장 예시 — PacBio HiFi long-read germline
@@ -259,9 +280,7 @@ export const PROFILES: AnalysisProfile[] = [
       mode: 'single-fastq',
       accept: ['.fastq.gz', '.fq.gz', '.bam'],
       maxFileSizeGb: 100,
-      slots: [
-        { id: 'reads', label: 'HiFi Reads', required: true },
-      ],
+      slots: [{ id: 'reads', label: 'HiFi Reads', required: true }],
     },
 
     options: [
@@ -275,7 +294,7 @@ export const PROFILES: AnalysisProfile[] = [
         type: 'select',
         default: 'pbmm2',
         choices: [
-          { value: 'pbmm2',    label: 'pbmm2 (PacBio 공식)', note: '권장' },
+          { value: 'pbmm2', label: 'pbmm2 (PacBio 공식)', note: '권장' },
           { value: 'minimap2', label: 'minimap2 (-x map-hifi)' },
         ],
       },
@@ -289,7 +308,7 @@ export const PROFILES: AnalysisProfile[] = [
         default: 'deepvariant-pacbio',
         choices: [
           { value: 'deepvariant-pacbio', label: 'DeepVariant (PACBIO 모델)', note: '권장' },
-          { value: 'clair3',             label: 'Clair3' },
+          { value: 'clair3', label: 'Clair3' },
         ],
       },
       {
@@ -308,13 +327,12 @@ export const PROFILES: AnalysisProfile[] = [
 
     pipeline: {
       scriptId: 'main_longread.sh',
-      bundleId: 'hs37d5_pacbio_hifi',
-      assembly: 'GRCh37',
+      bundleId: 'grch38_pacbio_hifi',
+      assembly: 'GRCh38',
     },
 
     estimatedMinutes: 600,
   },
-
 
   // ────────────────────────────────────────────────────────────────────────
   // [4] 확장 예시 — Somatic (tumor-normal 쌍)
@@ -338,10 +356,10 @@ export const PROFILES: AnalysisProfile[] = [
       accept: ['.fastq.gz', '.fq.gz'],
       maxFileSizeGb: 30,
       slots: [
-        { id: 'tumor_r1',  label: '종양 R1', required: true,  matchPattern: '_R1[_.]|_1\\.' },
-        { id: 'tumor_r2',  label: '종양 R2', required: true,  matchPattern: '_R2[_.]|_2\\.' },
-        { id: 'normal_r1', label: '정상 R1', required: true,  matchPattern: '_R1[_.]|_1\\.' },
-        { id: 'normal_r2', label: '정상 R2', required: true,  matchPattern: '_R2[_.]|_2\\.' },
+        { id: 'tumor_r1', label: '종양 R1', required: true, matchPattern: '_R1[_.]|_1\\.' },
+        { id: 'tumor_r2', label: '종양 R2', required: true, matchPattern: '_R2[_.]|_2\\.' },
+        { id: 'normal_r1', label: '정상 R1', required: true, matchPattern: '_R1[_.]|_1\\.' },
+        { id: 'normal_r2', label: '정상 R2', required: true, matchPattern: '_R2[_.]|_2\\.' },
       ],
     },
 
@@ -357,7 +375,7 @@ export const PROFILES: AnalysisProfile[] = [
         type: 'select',
         default: 'mutect2',
         choices: [
-          { value: 'mutect2',  label: 'GATK Mutect2', note: '표준' },
+          { value: 'mutect2', label: 'GATK Mutect2', note: '표준' },
           { value: 'strelka2', label: 'Strelka2' },
         ],
       },
@@ -402,8 +420,7 @@ export const PROFILES: AnalysisProfile[] = [
       {
         key: 'mutational_signature',
         label: '돌연변이 시그니처 분석',
-        help:
-          'COSMIC SBS 시그니처와 대조하여 변이 발생 원인(흡연, UV, MMR 결손 등)을 추정합니다.',
+        help: 'COSMIC SBS 시그니처와 대조하여 변이 발생 원인(흡연, UV, MMR 결손 등)을 추정합니다.',
         type: 'boolean',
         default: false,
         advanced: true,
@@ -414,14 +431,13 @@ export const PROFILES: AnalysisProfile[] = [
 
     pipeline: {
       scriptId: 'main_somatic.sh',
-      bundleId: 'hs37d5_solid_tumor_panel',
-      assembly: 'GRCh37',
+      bundleId: 'grch38_solid_tumor_panel',
+      assembly: 'GRCh38',
     },
 
     estimatedMinutes: 480,
   },
 ];
-
 
 // ── 조회 헬퍼 ───────────────────────────────────────────────────────────────
 
@@ -437,8 +453,8 @@ export function filterProfiles(filters: {
 }): AnalysisProfile[] {
   return PROFILES.filter((p) => {
     if (filters.variantClass && p.variantClass !== filters.variantClass) return false;
-    if (filters.platform     && p.platform     !== filters.platform)     return false;
-    if (filters.assay        && p.assay        !== filters.assay)        return false;
+    if (filters.platform && p.platform !== filters.platform) return false;
+    if (filters.assay && p.assay !== filters.assay) return false;
     return true;
   });
 }

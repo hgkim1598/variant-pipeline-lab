@@ -8,8 +8,8 @@ export default function HomePage() {
       <p className="mt-2 text-sm text-muted-foreground">
         Illumina WES 데이터를 업로드하면 BRCA1/2 등 8개 유전자의 변이를 자동 분석합니다.
       </p>
-      <Button asChild className="mt-6">
-        <Link to="/submit">분석 시작</Link>
+      <Button render={<Link to="/submit" />} className="mt-6">
+        분석 시작
       </Button>
     </div>
   )
