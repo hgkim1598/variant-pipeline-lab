@@ -9,3 +9,6 @@
 # Python generated files
 __pycache__/
 *.py[cod]
+
+# Downloaded reference resources are restored from versioned manifests/scripts.
+resources/capture_beds/

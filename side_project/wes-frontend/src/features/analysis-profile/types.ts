@@ -43,6 +43,8 @@ export interface OptionChoice {
   label: string;
   /** 선택지 옆에 붙는 짧은 설명 — "권장", "실험적" 등 */
   note?: string;
+  /** 리소스가 아직 준비되지 않은 선택지는 목록에 표시하되 선택하지 못하게 한다. */
+  disabled?: boolean;
 }
 
 export interface OptionField {

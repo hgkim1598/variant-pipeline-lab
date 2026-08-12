@@ -100,7 +100,7 @@ function FieldRenderer({
             </SelectTrigger>
             <SelectContent>
               {field.choices?.map((c) => (
-                <SelectItem key={c.value} value={c.value}>
+                <SelectItem key={c.value} value={c.value} disabled={c.disabled}>
                   <span>{c.label}</span>
                   {c.note && (
                     <span className="ml-2 rounded bg-emerald-50 px-1.5 py-0.5

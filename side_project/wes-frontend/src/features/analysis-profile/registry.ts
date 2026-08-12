@@ -66,17 +66,18 @@ const OPT_CAPTURE_KIT: OptionField = {
     'FASTQ 라이브러리를 제작할 때 실제로 사용한 capture kit과 동일한 항목을 선택해야 합니다. ' +
     '선택값은 백엔드의 capture_kit.id로 전달되며, 해당 GRCh38 target BED와 메타데이터를 불러옵니다.',
   type: 'select',
-  default: 'agilent_sureselect_human_all_exon_v8',
+  default: 'idt_xgen_exome_hyb_panel_v2',
   choices: [
     {
       value: 'agilent_sureselect_human_all_exon_v8',
       label: 'Agilent SureSelect Human All Exon V8',
-      note: 'GRCh38',
+      note: 'BED 확인 필요',
+      disabled: true,
     },
     {
       value: 'idt_xgen_exome_hyb_panel_v2',
       label: 'IDT xGen Exome Hyb Panel v2',
-      note: 'GRCh38',
+      note: '기본값',
     },
     {
       value: 'twist_exome_2_0',

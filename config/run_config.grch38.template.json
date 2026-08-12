@@ -18,8 +18,8 @@
   "bqsr_diagnostics": false,
   "resume_strict_checksums": false,
   "capture_kit": {
-    "id": "agilent_sureselect_human_all_exon_v8",
-    "registry": "config/capture_kits.grch38.template.json"
+    "id": "idt_xgen_exome_hyb_panel_v2",
+    "registry": "config/capture_kits.grch38.json"
   },
   "resource_bundle": {
     "bundle_id": "TODO_GRCH38_WES_BUNDLE_ID",
