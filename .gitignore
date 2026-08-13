@@ -12,3 +12,15 @@ __pycache__/
 
 # Downloaded reference resources are restored from versioned manifests/scripts.
 resources/capture_beds/
+
+# Pipeline runtime output. FASTQ/BAM/VCF and whole run directories live here and
+# are never committed: a single WES run is tens of gigabytes.
+/runs/
+/uploads/
+
+# Backend runtime. The virtualenv and the SQLite metadata store are rebuilt from
+# backend/requirements.txt and db.py, so neither belongs in version control.
+backend/.venv/
+backend/data/*.db
+backend/data/*.db-*
+backend/.env
