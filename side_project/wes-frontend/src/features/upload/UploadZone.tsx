@@ -94,7 +94,7 @@ export function UploadZone({ spec, onChange }: Props) {
       <div
         {...getRootProps()}
         className={cn(
-          'cursor-pointer rounded-xl border-2 border-dashed p-8 text-center transition-colors',
+          'cursor-pointer rounded-lg border-2 border-dashed px-4 py-7 text-center transition-colors sm:p-8',
           isDragActive
             ? 'border-teal-500 bg-teal-50 dark:bg-teal-950'
             : 'border-slate-300 bg-slate-50 hover:border-teal-400 dark:border-slate-700 dark:bg-slate-900',
@@ -102,10 +102,10 @@ export function UploadZone({ spec, onChange }: Props) {
       >
         <input {...getInputProps()} />
         <UploadCloud className="mx-auto h-8 w-8 text-slate-400" />
-        <p className="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+        <p className="mx-auto mt-2 max-w-xl text-sm font-medium leading-5 text-slate-700 dark:text-slate-200">
           파일을 드래그하거나 클릭하여 선택 (여러 샘플 동시 업로드 가능)
         </p>
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mx-auto mt-1 max-w-xl break-words text-xs leading-5 text-slate-400">
           허용 형식: {spec.accept.join(', ')} · 최대 {spec.maxFileSizeGb}GB
         </p>
       </div>

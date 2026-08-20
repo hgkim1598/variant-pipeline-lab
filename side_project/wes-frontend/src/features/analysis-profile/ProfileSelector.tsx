@@ -12,7 +12,7 @@
  * ============================================================================
  */
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { Check, Lock, FlaskConical } from 'lucide-react';
 import type { AnalysisProfile, VariantClass, Platform, Assay } from './types';
 import { PROFILES, filterProfiles, availableValues } from './registry';
@@ -58,11 +58,11 @@ function AxisGroup<T extends string>({
   if (values.length === 0) return null;
 
   return (
-    <fieldset className="space-y-2">
+    <fieldset className="min-w-0 space-y-2">
       <legend className="text-xs font-medium uppercase tracking-wide text-slate-400">
         {legend}
       </legend>
-      <div className="flex flex-wrap gap-2">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-2">
         {values.map((v) => {
           const meta = labels[v] ?? { title: v, sub: '' };
           const active = selected === v;
@@ -72,7 +72,7 @@ function AxisGroup<T extends string>({
               type="button"
               onClick={() => onSelect(active ? null : v)}
               className={cn(
-                'rounded-lg border px-3.5 py-2 text-left transition-all',
+                'min-h-16 w-full rounded-lg border px-3.5 py-2.5 text-left transition-all',
                 'focus:outline-none focus:ring-2 focus:ring-teal-400',
                 active
                   ? 'border-teal-500 bg-teal-50 shadow-sm dark:bg-teal-950'
@@ -107,19 +107,16 @@ export function ProfileSelector({ value, onChange }: Props) {
   const [platform,     setPlatform]     = useState<Platform | null>('illumina');
   const [assay,        setAssay]        = useState<Assay | null>(null);
 
-  // 상위 축이 바뀌면 하위 선택이 유효하지 않을 수 있으므로 정리
-  useEffect(() => {
-    const ok = availableValues('platform', { variantClass: variantClass ?? undefined });
-    if (platform && !ok.includes(platform)) setPlatform(null);
-  }, [variantClass]); // eslint-disable-line react-hooks/exhaustive-deps
+  function handleVariantClassSelect(next: VariantClass | null) {
+    setVariantClass(next);
+    setPlatform(null);
+    setAssay(null);
+  }
 
-  useEffect(() => {
-    const ok = availableValues('assay', {
-      variantClass: variantClass ?? undefined,
-      platform:     platform ?? undefined,
-    });
-    if (assay && !ok.includes(assay)) setAssay(null);
-  }, [variantClass, platform]); // eslint-disable-line react-hooks/exhaustive-deps
+  function handlePlatformSelect(next: Platform | null) {
+    setPlatform(next);
+    setAssay(null);
+  }
 
   // 각 축에서 선택 가능한 값 (상위 필터 반영)
   const variantOpts = useMemo(
@@ -156,14 +153,14 @@ export function ProfileSelector({ value, onChange }: Props) {
           values={variantOpts}
           labels={LABELS.variantClass}
           selected={variantClass}
-          onSelect={setVariantClass}
+          onSelect={handleVariantClassSelect}
         />
         <AxisGroup
           legend="시퀀싱 플랫폼"
           values={platformOpts}
           labels={LABELS.platform}
           selected={platform}
-          onSelect={setPlatform}
+          onSelect={handlePlatformSelect}
         />
         <AxisGroup
           legend="분석 범위"
@@ -224,7 +221,7 @@ function ProfileCard({
       onClick={onSelect}
       disabled={locked}
       className={cn(
-        'group relative rounded-xl border p-4 text-left transition-all',
+        'group relative flex h-full min-h-48 flex-col rounded-lg border p-4 text-left transition-all',
         'focus:outline-none focus:ring-2 focus:ring-teal-400',
         locked   && 'cursor-not-allowed opacity-60',
         selected && 'border-teal-500 bg-teal-50/60 shadow-sm dark:bg-teal-950/40',
@@ -233,17 +230,27 @@ function ProfileCard({
         !selected && locked && 'border-slate-200 bg-slate-50 dark:bg-slate-900',
       )}
     >
-      <div className="mb-1.5 flex items-start justify-between gap-3">
-        <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+      <div className="mb-2 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+        <span className="min-w-0 text-sm font-semibold leading-5 text-slate-800 dark:text-slate-100">
           {profile.label}
         </span>
-        <span className={cn(
-          'shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium',
-          badge.cls,
-        )}>
-          {profile.status === 'beta' && <FlaskConical className="mr-0.5 inline h-2.5 w-2.5" />}
-          {locked && <Lock className="mr-0.5 inline h-2.5 w-2.5" />}
-          {badge.text}
+        <span className="flex min-w-24 items-center justify-end gap-1.5">
+          <span className={cn(
+            'inline-flex h-6 shrink-0 items-center rounded border px-2 text-[10px] font-medium',
+            badge.cls,
+          )}>
+            {profile.status === 'beta' && <FlaskConical className="mr-1 h-3 w-3" />}
+            {locked && <Lock className="mr-1 h-3 w-3" />}
+            {badge.text}
+          </span>
+          <span className={cn(
+            'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border',
+            selected
+              ? 'border-teal-500 bg-teal-500 text-white'
+              : 'border-transparent text-transparent',
+          )}>
+            <Check className="h-3.5 w-3.5" />
+          </span>
         </span>
       </div>
 
@@ -270,7 +277,7 @@ function ProfileCard({
       )}
 
       {/* 메타 정보 */}
-      <div className="mt-2.5 flex items-center gap-3 text-[10px] text-slate-400">
+      <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 pt-3 text-[10px] text-slate-400">
         <span>{profile.pipeline.assembly}</span>
         <span>·</span>
         <span>{profile.input.mode}</span>
@@ -282,9 +289,6 @@ function ProfileCard({
         )}
       </div>
 
-      {selected && (
-        <Check className="absolute right-3 top-3 h-4 w-4 text-teal-600" />
-      )}
     </button>
   );
 }

@@ -2,10 +2,8 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { ProfileSelector } from '@/features/analysis-profile/ProfileSelector';
-import {
-  DynamicOptionForm,
-  buildDefaults,
-} from '@/features/analysis-profile/DynamicOptionForm';
+import { DynamicOptionForm } from '@/features/analysis-profile/DynamicOptionForm';
+import { buildDefaults } from '@/features/analysis-profile/optionDefaults';
 import { UploadZone } from '@/features/upload/UploadZone';
 import { useChunkedUpload } from '@/features/upload/useChunkedUpload';
 import { getProfile } from '@/features/analysis-profile/registry';
@@ -90,15 +88,15 @@ export default function SubmitPage() {
   const readyCount = batch.groups.length;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-8 p-8">
+    <main className="mx-auto w-full max-w-5xl space-y-6 px-4 py-6 text-left sm:space-y-8 sm:px-6 sm:py-8 lg:px-8">
       <div>
-        <h1 className="mb-6 text-xl font-semibold">분석 선택</h1>
+        <h1 className="mb-6 text-2xl font-semibold leading-tight text-slate-900">분석 선택</h1>
         <ProfileSelector value={selectedId} onChange={handleSelectProfile} />
       </div>
 
       {profile && (
         <div
-          className="rounded-xl border border-slate-200 bg-white p-6
+          className="rounded-lg border border-slate-200 bg-white p-4 sm:p-6
                         dark:border-slate-700 dark:bg-slate-900"
         >
           <h2 className="mb-1 text-base font-semibold">파일 업로드</h2>
@@ -111,7 +109,7 @@ export default function SubmitPage() {
 
       {profile && (
         <div
-          className="rounded-xl border border-slate-200 bg-white p-6
+          className="rounded-lg border border-slate-200 bg-white p-4 sm:p-6
                         dark:border-slate-700 dark:bg-slate-900"
         >
           <h2 className="mb-1 text-base font-semibold">분석 옵션</h2>
@@ -135,7 +133,8 @@ export default function SubmitPage() {
           )}
 
           <div
-            className="mt-6 flex items-center justify-between border-t
+            className="mt-6 flex flex-col items-stretch gap-3 border-t
+                          sm:flex-row sm:items-center sm:justify-between
                           border-slate-100 pt-4 dark:border-slate-800"
           >
             <span className="text-xs text-muted-foreground">
@@ -143,7 +142,7 @@ export default function SubmitPage() {
                 ? `${readyCount}개 샘플 분석 준비 완료`
                 : '분석할 샘플을 업로드해 주세요'}
             </span>
-            <Button disabled={readyCount === 0 || submitting} onClick={handleSubmit}>
+            <Button className="w-full sm:w-auto" disabled={readyCount === 0 || submitting} onClick={handleSubmit}>
               {submitting
                 ? '처리 중...'
                 : `분석 시작${readyCount > 0 ? ` (${readyCount}개 샘플)` : ''}`}
@@ -151,6 +150,6 @@ export default function SubmitPage() {
           </div>
         </div>
       )}
-    </div>
+    </main>
   );
 }

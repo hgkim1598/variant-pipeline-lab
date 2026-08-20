@@ -72,8 +72,8 @@ function FieldRenderer({
   disabled?: boolean;
 }) {
   const labelBlock = (
-    <div className="flex items-center gap-2">
-      <Label htmlFor={field.key} className="text-sm font-medium">
+    <div className="flex min-w-0 items-center gap-2">
+      <Label htmlFor={field.key} className="min-w-0 text-sm font-medium leading-5">
         {field.label}
       </Label>
       <HelpTip text={field.help} />
@@ -83,8 +83,10 @@ function FieldRenderer({
   switch (field.type) {
     // ── 드롭다운 ────────────────────────────────────────────────────────────
     case 'select':
+      {
+      const selectedChoice = field.choices?.find((choice) => choice.value === String(value));
       return (
-        <div className="flex items-center justify-between gap-4 py-2.5">
+        <div className="grid gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(260px,320px)] sm:items-center sm:gap-4">
           {labelBlock}
           <Select
             value={String(value)}
@@ -95,13 +97,13 @@ function FieldRenderer({
             }}
             disabled={disabled}
           >
-            <SelectTrigger id={field.key} className="w-[260px]">
-              <SelectValue />
+            <SelectTrigger id={field.key} className="w-full min-w-0">
+              <SelectValue>{selectedChoice?.label ?? String(value)}</SelectValue>
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end">
               {field.choices?.map((c) => (
                 <SelectItem key={c.value} value={c.value} disabled={c.disabled}>
-                  <span>{c.label}</span>
+                  <span className="min-w-0 flex-1 truncate">{c.label}</span>
                   {c.note && (
                     <span className="ml-2 rounded bg-emerald-50 px-1.5 py-0.5
                                      text-[10px] font-medium text-emerald-700">
@@ -114,6 +116,7 @@ function FieldRenderer({
           </Select>
         </div>
       );
+      }
 
     // ── 슬라이더 (스케일바) ─────────────────────────────────────────────────
     case 'slider':
@@ -147,9 +150,9 @@ function FieldRenderer({
     // ── 숫자 입력 ───────────────────────────────────────────────────────────
     case 'number':
       return (
-        <div className="flex items-center justify-between gap-4 py-2.5">
+        <div className="grid gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
           {labelBlock}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 sm:justify-self-end">
             <Input
               id={field.key}
               type="number"
@@ -171,7 +174,7 @@ function FieldRenderer({
     // ── 스위치 ──────────────────────────────────────────────────────────────
     case 'boolean':
       return (
-        <div className="flex items-center justify-between gap-4 py-2.5">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 py-3">
           {labelBlock}
           <Switch
             id={field.key}
@@ -186,7 +189,7 @@ function FieldRenderer({
     case 'text':
     default:
       return (
-        <div className="flex items-center justify-between gap-4 py-2.5">
+        <div className="grid gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(260px,320px)] sm:items-center sm:gap-4">
           {labelBlock}
           <Input
             id={field.key}
@@ -194,7 +197,7 @@ function FieldRenderer({
             value={String(value)}
             disabled={disabled}
             onChange={(e) => onChange(e.target.value)}
-            className="w-[260px]"
+            className="w-full min-w-0"
           />
         </div>
       );
@@ -262,9 +265,4 @@ export function DynamicOptionForm({ fields, values, onChange, disabled }: Props)
       )}
     </div>
   );
-}
-
-/** 프로파일 전환 시 옵션 기본값을 초기화하는 헬퍼 */
-export function buildDefaults(fields: OptionField[]): OptionValues {
-  return Object.fromEntries(fields.map((f) => [f.key, f.default]));
 }
