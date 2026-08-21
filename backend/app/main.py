@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, db
-from .api import jobs, uploads
+from .api import jobs, results, uploads
 from .services import worker
 
 
@@ -50,6 +50,9 @@ app.add_middleware(
 
 app.include_router(uploads.router)
 app.include_router(jobs.router)
+# Separate router, same /api/jobs prefix: the result endpoints are additive and
+# jobs.py is left exactly as it was.
+app.include_router(results.router)
 
 
 @app.get("/api/health", tags=["health"])
