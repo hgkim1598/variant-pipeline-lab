@@ -112,6 +112,56 @@ BUNDLE_ID = _env("WES_BUNDLE_ID", "grch38_wes_germline")
 DBSNP_VCF = _env("WES_DBSNP_VCF")
 KNOWN_SITES = [p for p in (s.strip() for s in _env("WES_KNOWN_SITES").split(",")) if p]
 
+# --- optional InterVar capability (operator supplied) ---------------------
+# main.sh's run_intervar() reads intervar.install_dir, intervar.build and
+# intervar.humandb_dir out of the run config and fails the step when any of
+# them is missing. This server therefore claims the capability only when the
+# operator has supplied all three; INTERVAR is None otherwise, and the ACMG
+# option is reported back as unsupported rather than silently dropped.
+#
+# The assembly -> ANNOVAR build correspondence (GRCh38 -> hg38) lives in
+# main.sh's INTERVAR_BUILD_FOR_ASSEMBLY and is deliberately NOT duplicated
+# here. main.sh validates the pair itself; a copy would only drift from it.
+INTERVAR_KEYS = ("install_dir", "build", "humandb_dir")
+_INTERVAR_ENV = {
+    "install_dir": "WES_INTERVAR_DIR",
+    "build": "WES_INTERVAR_BUILD",
+    "humandb_dir": "WES_INTERVAR_HUMANDB",
+}
+
+
+def _resolve_intervar() -> dict[str, str] | None:
+    """All three set -> the profile. None set -> None. Partial -> ConfigError.
+
+    Fail-closed for the same reason _resolve_run_mode() is: a half-configured
+    InterVar bundle is an operator mistake, and treating it as "capability
+    absent" would hide the mistake behind a run that merely looks fine.
+    """
+    values = {key: _env(_INTERVAR_ENV[key]) for key in INTERVAR_KEYS}
+    if not any(values.values()):
+        return None
+
+    missing = [_INTERVAR_ENV[k] for k in INTERVAR_KEYS if not values[k]]
+    if missing:
+        raise ConfigError(
+            "Incomplete InterVar configuration: "
+            f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} unset. "
+            f"Set all of {', '.join(_INTERVAR_ENV.values())}, or none of them to "
+            "run without ACMG classification."
+        )
+
+    for key in ("install_dir", "humandb_dir"):
+        if not Path(values[key]).is_dir():
+            raise ConfigError(
+                f"{_INTERVAR_ENV[key]} does not point at a directory: {values[key]}. "
+                "InterVar and its ANNOVAR humandb must be installed before the "
+                "server claims the capability; main.sh never installs them."
+            )
+    return values
+
+
+INTERVAR = _resolve_intervar()
+
 # --- compute --------------------------------------------------------------
 THREADS = int(_env("WES_THREADS", "4"))
 JAVA_MEM_GB = int(_env("WES_JAVA_MEM_GB", "8"))

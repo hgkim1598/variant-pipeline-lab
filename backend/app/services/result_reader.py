@@ -111,9 +111,14 @@ def _step_document(run_dir: Path, step_id: str) -> dict | None:
 
 
 # --- shared adapters --------------------------------------------------------
+#
+# These three read a step document's own vocabulary and are public because
+# step_reader reuses them for GET /api/jobs/{id}/steps/{step_id}. Both
+# endpoints must describe the same warning in the same shape, which a second
+# copy of this mapping would not guarantee.
 
 
-def _checks(doc: dict | None) -> list[dict]:
+def checks_of(doc: dict | None) -> list[dict]:
     """The named check table, PASS rows included.
 
     GET /api/jobs/{id} keeps only warnings and failures, because the step
@@ -140,7 +145,7 @@ def _checks(doc: dict | None) -> list[dict]:
     return out
 
 
-def _warnings(raw: Any) -> list[dict]:
+def warnings_of(raw: Any) -> list[dict]:
     if not isinstance(raw, list):
         return []
     out = []
@@ -159,7 +164,7 @@ def _warnings(raw: Any) -> list[dict]:
     return out
 
 
-def _failures(raw: Any) -> list[dict]:
+def failures_of(raw: Any) -> list[dict]:
     if not isinstance(raw, list):
         return []
     out = []
@@ -401,9 +406,9 @@ def _read_precheck(run_dir: Path, run_status: dict) -> dict[str, Any]:
         "schemaVersion": _as_str(step.get("schema_version")),
         "sample": _as_str((metrics or {}).get("sample")),
         "elapsedSeconds": elapsed if isinstance(elapsed, int) else None,
-        "checks": _checks(step),
-        "warnings": _warnings(step.get("warnings")),
-        "failures": _failures(step.get("failures")),
+        "checks": checks_of(step),
+        "warnings": warnings_of(step.get("warnings")),
+        "failures": failures_of(step.get("failures")),
         "inputSummary": _input_summary(metrics),
         "coverage": None,
         "variantCalling": None,
@@ -451,8 +456,8 @@ def _read_full(run_dir: Path, run_status: dict) -> dict[str, Any]:
         "sample": _as_str(summary.get("sample")),
         "elapsedSeconds": elapsed_total,
         # The consolidated pass/warn/fail table, as finalization recorded it.
-        "checks": _checks(_step_document(run_dir, FINAL_STEP_ID)),
-        "warnings": _warnings(summary.get("warnings")),
+        "checks": checks_of(_step_document(run_dir, FINAL_STEP_ID)),
+        "warnings": warnings_of(summary.get("warnings")),
         "failures": _full_failures(run_dir, run_status),
         "inputSummary": _input_summary(input_metrics),
         "coverage": coverage,
@@ -473,7 +478,7 @@ def _full_failures(run_dir: Path, run_status: dict) -> list[dict]:
         doc = _step_document(run_dir, str(step_id))
         if not isinstance(doc, dict):
             continue
-        for failure in _failures(doc.get("failures")):
+        for failure in failures_of(doc.get("failures")):
             failure["stepId"] = str(step_id)
             out.append(failure)
     return out

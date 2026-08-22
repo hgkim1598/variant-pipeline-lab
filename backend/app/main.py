@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, db
-from .api import jobs, results, uploads
+from .api import jobs, results, steps, uploads
 from .services import worker
 
 
@@ -53,6 +53,9 @@ app.include_router(jobs.router)
 # Separate router, same /api/jobs prefix: the result endpoints are additive and
 # jobs.py is left exactly as it was.
 app.include_router(results.router)
+# Same again for the per-step detail view; see api/steps.py for why it is not
+# folded into the polled job endpoint.
+app.include_router(steps.router)
 
 
 @app.get("/api/health", tags=["health"])

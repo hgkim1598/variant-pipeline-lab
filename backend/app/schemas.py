@@ -253,6 +253,80 @@ class ArtifactEntry(BaseModel):
     available: bool = True
 
 
+# --- step detail ----------------------------------------------------------
+#
+# GET /api/jobs/{id}/steps/{step_id}. One step's own view of what the terminal
+# workflow used to show: what went in, whether it passed, what it measured,
+# what it produced, and whether the pipeline was willing to go on.
+#
+# Composed from the models above rather than redefining them: a warning must
+# look the same here as it does in /results.
+
+
+class StepIO(BaseModel):
+    """One declared input or output of a step.
+
+    `path` is run-relative exactly as main.sh recorded it with os.path.relpath.
+    For the backend's own generated inputs that legitimately reads
+    "../_jobs/<run>/run_config.json", because they live in a sibling directory.
+    It is provenance for the reader; nothing is ever opened from this value.
+    Files are served only through the artifact endpoints, which validate
+    containment themselves.
+    """
+
+    type: str = ""
+    path: str
+
+
+class StepValidation(BaseModel):
+    """The step's named check table.
+
+    Counts are deliberately absent: they are len() of lists already present in
+    the response, and a second copy could only ever disagree with them.
+    """
+
+    # main.sh writes pass / warn / fail lowercase for the step as a whole.
+    status: str = ""
+    results: list[CheckResult] = Field(default_factory=list)
+
+
+class StepDetailResponse(BaseModel):
+    jobId: str
+    runId: str
+    stepId: str
+    # pending and running are backend-derived: main.sh writes a step document
+    # only when the step finishes, so neither state exists on disk.
+    status: StepStatus
+
+    startedAt: str | None = None
+    finishedAt: str | None = None
+    # For a finished step this is the pipeline's own elapsed_seconds. For the
+    # running step it is measured from the STARTED row in stage_status.tsv, and
+    # 0 when that cannot be read.
+    elapsedSeconds: int = 0
+    exitCode: int | None = None
+
+    inputs: list[StepIO] = Field(default_factory=list)
+    outputs: list[StepIO] = Field(default_factory=list)
+    validation: StepValidation = Field(default_factory=StepValidation)
+
+    # Passed through exactly as main.sh's step_metric recorded them. The keys
+    # are the pipeline's metric identifiers (mapped_pct, percent_duplication,
+    # mean_target_depth, ...), not an API vocabulary, so a new metric in
+    # main.sh needs no change here. Empty until the step finishes.
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+    # Only this step's artifacts, from the shared artifact reader.
+    artifacts: list[ArtifactEntry] = Field(default_factory=list)
+
+    warnings: list[PipelineWarning] = Field(default_factory=list)
+    failures: list[PipelineFailure] = Field(default_factory=list)
+
+    # main.sh's own gate: gate_next_step() refuses to continue unless the step
+    # reported a terminal status AND next_step_ready is true.
+    nextStepReady: bool = False
+
+
 class ArtifactListResponse(BaseModel):
     jobId: str
     artifactCount: int

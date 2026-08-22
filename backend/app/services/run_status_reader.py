@@ -17,6 +17,11 @@ Three things have to be reconciled here:
    everything else is inferred from the plan the backend recorded at submit time.
 3. main.sh has no progress field, so progress is derived from the plan. It is
    never a function of elapsed time.
+
+The one thing a finished step document cannot supply is how long the *current*
+step has been running, because the document does not exist yet. That single
+value comes from logs/stage_status.tsv via stage_status_reader; see there for
+why that file is the pipeline's own record and not a log-parsing heuristic.
 """
 
 from __future__ import annotations
@@ -24,6 +29,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+
+from . import stage_status_reader
 
 LOG_TAIL_LINES = 200
 
@@ -88,6 +95,20 @@ def read_step_document(run_dir: Path, step_id: str) -> dict[str, Any] | None:
     return _read_json(run_dir / "status" / "steps" / f"{step_id}.json")
 
 
+def read_step_metrics(run_dir: Path, step_id: str) -> dict[str, Any]:
+    """The step's own metric object, exactly as main.sh recorded it.
+
+    finish_step() writes metrics/<step>.json at the same moment as the status
+    document, so an absent file means the step has not finished yet -- not an
+    error. The inner object is passed through untouched: its keys are the
+    pipeline's metric identifiers (mapped_pct, percent_duplication, ...), and
+    adding a step_metric call to main.sh must not require a backend change.
+    """
+    doc = _read_json(run_dir / "metrics" / f"{step_id}.json")
+    metrics = doc.get("metrics") if doc is not None else None
+    return metrics if isinstance(metrics, dict) else {}
+
+
 def _step_messages(doc: dict[str, Any]) -> list[str]:
     messages: list[str] = []
     for warning in doc.get("warnings") or []:
@@ -128,9 +149,22 @@ def build_steps(
             )
             continue
 
+        # No document: the step is either the one in flight or still ahead of
+        # it. Only the running step has a start the pipeline has recorded, so
+        # only it can report an elapsed time; a pending step stays at 0.
         status = "running" if step_id == current_step else "pending"
+        elapsed = (
+            stage_status_reader.running_elapsed_seconds(run_dir, step_id)
+            if status == "running"
+            else 0
+        )
         steps.append(
-            {"stepId": step_id, "status": status, "elapsedSeconds": 0, "messages": []}
+            {
+                "stepId": step_id,
+                "status": status,
+                "elapsedSeconds": elapsed,
+                "messages": [],
+            }
         )
 
     return steps, completed

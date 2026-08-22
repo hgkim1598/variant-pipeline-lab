@@ -197,6 +197,19 @@ class RunBuilder:
             },
         )
 
+    def stage_status(self, rows: list[tuple[str, str, str]] | None = None) -> None:
+        """Write logs/stage_status.tsv the way append_status_tsv() does.
+
+        Rows are (timestamp, step, status); exit_code is filled in as main.sh
+        does. The header is always written first, because append_status_tsv
+        writes it before the first row.
+        """
+        lines = ["timestamp\tstep\tstatus\texit_code"]
+        for timestamp, step, status in rows or []:
+            code = "1" if status.upper() == "FAILED" else "0"
+            lines.append(f"{timestamp}\t{step}\t{status}\t{code}")
+        self.raw("logs/stage_status.tsv", "\n".join(lines) + "\n")
+
     def metrics(self, step_id: str, metrics: dict) -> None:
         write_json(
             self.run_dir / "metrics" / f"{step_id}.json",
@@ -688,3 +701,48 @@ def run(env):
         return RunBuilder(env, run_id)
 
     return _run
+
+
+@pytest.fixture
+def make_upload(env):
+    """A completed upload row plus the gzip file it points at.
+
+    POST /api/jobs resolves the token through the database, so a submission
+    test needs a real row and a real file. Going through the chunk endpoints
+    would exercise uploads.py, which these tests are not about.
+    """
+
+    def _make(name: str = "demo_R1.fastq.gz") -> str:
+        upload_id = "upl_" + hashlib.sha256(name.encode()).hexdigest()[:24]
+        final_dir = config.UPLOAD_ROOT / upload_id
+        final_dir.mkdir(parents=True, exist_ok=True)
+        final_path = final_dir / name
+        final_path.write_bytes(b"\x1f\x8bFASTQ")
+        db.execute(
+            """INSERT INTO uploads
+               (upload_id, original_filename, stored_filename, sample_id, slot_id,
+                expected_size, chunk_dir, final_path, completed, created_at)
+               VALUES (?,?,?,?,?,?,?,?,1,?)""",
+            (
+                upload_id,
+                name,
+                name,
+                "DEMO01",
+                "r1",
+                final_path.stat().st_size,
+                str(final_dir / "chunks"),
+                str(final_path),
+                db.now_iso(),
+            ),
+        )
+        return upload_id
+
+    return _make
+
+
+@pytest.fixture
+def reference_configured(monkeypatch):
+    """The minimum server configuration build_run_config() insists on."""
+    monkeypatch.setattr(config, "REFERENCE_FASTA", "/refs/GRCh38.fa")
+    monkeypatch.setattr(config, "CONTIG_STYLE", "chr")
+    monkeypatch.setattr(config, "RUN_MODE", "full")

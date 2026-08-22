@@ -55,6 +55,9 @@ FINAL_STEP = "99_finalization"
 SUPPORTED_OPTION_KEYS = {
     "capture_kit_id": "capture_kit.id",
     "assembly": "resource_bundle.assembly (validated against server bundle)",
+    # Conditional: only honoured when this server has an InterVar bundle
+    # configured. resolve_intervar() decides, and the caller moves the key to
+    # the unsupported list when it cannot be honoured.
     "run_acmg": "optional_steps.intervar",
 }
 
@@ -120,6 +123,28 @@ def split_options(options: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     supported = {k: v for k, v in options.items() if k in SUPPORTED_OPTION_KEYS}
     unsupported = sorted(k for k in options if k not in SUPPORTED_OPTION_KEYS)
     return supported, unsupported
+
+
+def resolve_intervar(options: dict[str, Any]) -> tuple[bool, bool]:
+    """Decide once whether 11_intervar will run.
+
+    Returns (enabled, requested_but_unavailable).
+
+    This is the single decision behind three things that must never disagree:
+    planned_steps(), run_config.optional_steps.intervar and the run_config
+    `intervar` block. Deriving them separately is how a plan that promises
+    11_intervar ends up next to a config that switches it off.
+
+    `requested_but_unavailable` is true when the user asked for ACMG
+    classification on a server with no InterVar bundle. The caller reports that
+    through the existing unsupported-options channel; it is never dropped.
+    """
+    requested = bool(options.get("run_acmg", False))
+    if not requested:
+        return False, False
+    if config.INTERVAR is None:
+        return False, True
+    return True, False
 
 
 def planned_steps(run_mode: str, intervar: bool) -> list[str]:
@@ -217,6 +242,17 @@ def build_run_config(
     }
     if config.DBSNP_VCF:
         doc["resource_bundle"]["dbsnp_vcf"] = config.DBSNP_VCF
+    if intervar:
+        # run_intervar() reads exactly these three keys and fails the step when
+        # any is missing, so enabling the step without them would guarantee the
+        # failure this block exists to prevent.
+        if config.INTERVAR is None:
+            raise ConfigBuildError(
+                "internal: InterVar was enabled for this run but the server has no "
+                "InterVar bundle configured. resolve_intervar() is the only thing "
+                "allowed to enable it."
+            )
+        doc["intervar"] = dict(config.INTERVAR)
     return doc
 
 

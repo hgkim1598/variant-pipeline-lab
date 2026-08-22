@@ -99,7 +99,13 @@ def create_job(payload: CreateJobRequest) -> CreateJobResponse:
         raise HTTPException(status_code=400, detail="r1 and r2 refer to the same uploaded file")
 
     supported, unsupported = config_builder.split_options(options)
-    intervar = bool(supported.get("run_acmg", False))
+    # One decision drives both the recorded plan and the generated config; see
+    # resolve_intervar(). When the server cannot honour run_acmg the key moves
+    # to the unsupported list rather than being quietly ignored, so the client
+    # can see that the option it sent did not take effect.
+    intervar, acmg_unavailable = config_builder.resolve_intervar(supported)
+    if acmg_unavailable:
+        unsupported = sorted({*unsupported, "run_acmg"})
 
     run_id = config_builder.new_run_id()
     job_dir = config.JOBS_ROOT / run_id
